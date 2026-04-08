@@ -20,12 +20,14 @@
   'use strict';
 
   // ── Config ────────────────────────────────────────────────────────────────
-  var SCRIPT_TAG = document.currentScript || (function () {
-    var scripts = document.getElementsByTagName('script');
-    return scripts[scripts.length - 1];
-  })();
-  var CLIENT_ID = SCRIPT_TAG.getAttribute('data-client');
-  var API_BASE = 'https://chat.zempotis.com';
+  // document.currentScript is null for async scripts and dynamically injected
+  // scripts (e.g. next/script). Fall back to querying by src so data-client
+  // is always found regardless of how the script was loaded.
+  var SCRIPT_TAG = document.currentScript ||
+    document.querySelector('script[src*="widget.js"][data-client]') ||
+    document.querySelector('script[src*="widget.js"]');
+  var CLIENT_ID = SCRIPT_TAG ? SCRIPT_TAG.getAttribute('data-client') : null;
+  var API_BASE = 'https://zempotis-chat-fy989x4cu-abdul-aziz-uddins-projects.vercel.app';
 
   if (!CLIENT_ID) {
     console.warn('[Zempotis] Missing data-client attribute.');
@@ -483,7 +485,7 @@
     }, 800 + Math.random() * 600);
   }
 
-  function callAPI(userText) {
+  function callAPI() {
     showTyping(true);
 
     // Build messages array from history (exclude lead capture steps for context clarity)
