@@ -1,10 +1,8 @@
 /**
  * GET /api/client/[clientId]
  *
- * Returns public-safe client config so the widget loads brand colours,
- * greeting, and quick replies.
- *
- * Note: `params` is a Promise in Next.js 16 — must be awaited.
+ * Returns public-safe client config for the widget to load
+ * brand colours, greeting, and quick replies.
  */
 
 import { NextRequest } from 'next/server';
@@ -27,27 +25,23 @@ export async function GET(
 ) {
   const { clientId } = await params;
 
-  // Sanitise — only allow alphanumeric + hyphens to prevent path traversal
   if (!/^[a-z0-9-]+$/.test(clientId)) {
     return Response.json({ error: 'Invalid client ID' }, { status: 400, headers: CORS });
   }
 
   try {
-    const filePath = path.join(process.cwd(), 'data', 'clients', `${clientId}.json`);
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const config = JSON.parse(raw);
+    // public/clients/ is always available on Vercel
+    const filePath = path.join(process.cwd(), 'public', 'clients', `${clientId}.json`);
+    const config = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
-    // Only expose what the widget needs — never send scraped content or keys
-    const publicConfig = {
+    return Response.json({
       clientId: config.clientId,
       name: config.name,
       primaryColor: config.primaryColor,
       accentColor: config.accentColor,
       greeting: config.greeting,
       quickReplies: config.quickReplies,
-    };
-
-    return Response.json(publicConfig, { status: 200, headers: CORS });
+    }, { status: 200, headers: CORS });
   } catch {
     return Response.json(
       { error: `Client "${clientId}" not found` },

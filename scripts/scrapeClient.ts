@@ -365,7 +365,8 @@ async function scrape() {
     chunkCount: uploaded,
   };
 
-  const outDir = path.resolve(process.cwd(), 'data', 'clients');
+  // Save to public/clients/ so Vercel always includes it in deployments
+  const outDir = path.resolve(process.cwd(), 'public', 'clients');
   fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, `${clientId}.json`);
   fs.writeFileSync(outPath, JSON.stringify(clientConfig, null, 2), 'utf-8');
