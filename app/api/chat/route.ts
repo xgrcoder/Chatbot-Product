@@ -22,8 +22,8 @@ import { retrieveContext } from '@/lib/rag';
 // CORS headers applied to every response so the widget works cross-domain
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 export async function OPTIONS() {
@@ -43,8 +43,11 @@ interface ClientConfig {
 }
 
 function loadClientConfig(clientId: string): ClientConfig | null {
+  // Sanitise — only allow alphanumeric + hyphens to prevent path traversal
+  if (!/^[a-z0-9-]+$/.test(clientId)) return null;
   try {
-    const filePath = path.resolve(process.cwd(), 'data', 'clients', `${clientId}.json`);
+    // Use path relative to cwd — works on Vercel because the file is in the repo
+    const filePath = path.join(process.cwd(), 'data', 'clients', `${clientId}.json`);
     const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw) as ClientConfig;
   } catch {
@@ -85,19 +88,19 @@ export async function POST(request: NextRequest) {
     const latestUser = [...messages].reverse().find(m => m.role === 'user');
     const userQuery = latestUser?.content ?? '';
 
-    // Retrieve relevant context chunks
+    // Retrieve relevant context chunks — gracefully skips if Supabase is unavailable
     const { context, ragUsed } = await retrieveContext(clientId, userQuery, 5);
 
-    // Build system prompt
+    // Build system prompt — prefer tight RAG context, fall back to full content
     const contextSection = ragUsed
       ? `\n\nRelevant information from ${client.name}'s website:\n${context}`
-      : `\n\nFull website content for reference:\n${client.content.slice(0, 8000)}`;
+      : `\n\nWebsite content for reference:\n${client.content.slice(0, 8000)}`;
 
     const systemPrompt = `You are a helpful, friendly AI assistant for ${client.name}.
-Your job is to answer questions from visitors to their website accurately and concisely.
-Always be professional, warm, and on-brand.
+Answer questions from website visitors accurately and concisely.
+Be professional, warm, and on-brand. Keep answers brief — 2-4 sentences max unless detail is truly needed.
 If you don't know something, say so honestly and suggest they contact the team directly.
-Do not make up information that is not in the provided context.
+Never make up information that is not in the provided context.
 ${contextSection}`;
 
     // Send to Groq
@@ -110,8 +113,8 @@ ${contextSection}`;
           content: m.content,
         })),
       ],
-      temperature: 0.6,
-      max_tokens: 512,
+      temperature: 0.5,
+      max_tokens: 400,
     });
 
     const reply = completion.choices[0]?.message?.content ?? 'Sorry, I could not generate a response.';

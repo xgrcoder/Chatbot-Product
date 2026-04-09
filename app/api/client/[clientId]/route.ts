@@ -1,8 +1,8 @@
 /**
  * GET /api/client/[clientId]
  *
- * Returns the public-safe portions of the client config so the widget
- * can load brand colours, greeting, and quick replies.
+ * Returns public-safe client config so the widget loads brand colours,
+ * greeting, and quick replies.
  *
  * Note: `params` is a Promise in Next.js 16 — must be awaited.
  */
@@ -13,8 +13,8 @@ import * as path from 'path';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 export async function OPTIONS() {
@@ -27,12 +27,17 @@ export async function GET(
 ) {
   const { clientId } = await params;
 
+  // Sanitise — only allow alphanumeric + hyphens to prevent path traversal
+  if (!/^[a-z0-9-]+$/.test(clientId)) {
+    return Response.json({ error: 'Invalid client ID' }, { status: 400, headers: CORS });
+  }
+
   try {
-    const filePath = path.resolve(process.cwd(), 'data', 'clients', `${clientId}.json`);
+    const filePath = path.join(process.cwd(), 'data', 'clients', `${clientId}.json`);
     const raw = fs.readFileSync(filePath, 'utf-8');
     const config = JSON.parse(raw);
 
-    // Return only the fields needed by the widget (never expose full scraped content)
+    // Only expose what the widget needs — never send scraped content or keys
     const publicConfig = {
       clientId: config.clientId,
       name: config.name,
