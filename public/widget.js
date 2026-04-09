@@ -256,6 +256,7 @@
   /**
    * Build the inner HTML for a small avatar circle.
    * size: 'header' (36px) | 'msg' (28px)
+   * Falls back to a robot SVG — never shows a letter.
    */
   function buildAvatarInnerHtml(config, size) {
     var logoUrl = config && config.logoUrl;
@@ -263,9 +264,8 @@
       var pad = size === 'header' ? '4px' : '3px';
       return '<img src="' + escHtml(logoUrl) + '" alt="" style="width:100%;height:100%;object-fit:contain;padding:' + pad + ';border-radius:50%;">';
     }
-    var letter = getDisplayName(config).charAt(0).toUpperCase();
-    var fs = size === 'header' ? '16px' : '12px';
-    return '<span class="zp-avatar-letter" style="font:700 ' + fs + '/1 Inter,system-ui;color:#fff;">' + escHtml(letter) + '</span>';
+    var cls = size === 'header' ? 'zp-robot-header' : 'zp-robot-msg';
+    return '<span class="' + cls + '">' + ICONS.bot + '</span>';
   }
 
   // ── Styles ────────────────────────────────────────────────────────────────
@@ -367,7 +367,9 @@
       '#zp-avatar{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);',
       'display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden}',
       '#zp-avatar img{width:100%;height:100%;object-fit:contain;padding:4px}',
-      '.zp-avatar-letter{font:700 16px/1 Inter,system-ui;color:#fff}',
+      // Robot in header (white on gradient)
+      '.zp-robot-header{display:flex;align-items:center;justify-content:center;width:68%;height:68%}',
+      '.zp-robot-header svg{width:100%;height:100%;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
       '#zp-title-wrap{flex:1;min-width:0}',
       '#zp-title{font:600 14px/1 Inter,system-ui;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '#zp-status{display:flex;align-items:center;gap:5px;margin-top:4px}',
@@ -406,7 +408,9 @@
       '.zp-msg-avatar{width:28px;height:28px;border-radius:50%;flex-shrink:0;overflow:hidden;',
       'background:'+avatarMsgBg+';display:flex;align-items:center;justify-content:center}',
       '.zp-msg-avatar img{width:100%;height:100%;object-fit:contain;padding:3px;border-radius:50%}',
-      '.zp-msg-avatar .zp-av-letter{font:700 12px/1 Inter,system-ui;color:'+primary+'}',
+      // Robot in message avatar (primary-coloured on tinted background)
+      '.zp-robot-msg{display:flex;align-items:center;justify-content:center;width:65%;height:65%}',
+      '.zp-robot-msg svg{width:100%;height:100%;stroke:'+primary+';fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
 
       // Bubble wrap
       '.zp-bubble-wrap{display:flex;flex-direction:column;max-width:80%}',
@@ -519,19 +523,17 @@
       '#zp-send:disabled{opacity:.45;cursor:default;transform:none}',
       '#zp-send svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}',
 
-      // ── Footer bar — centred lead link + Powered by ──
-      '#zp-footer{display:flex;align-items:center;justify-content:center;gap:6px;',
-      'padding:6px 14px 10px;flex-shrink:0}',
-      '#zp-lead-btn{background:none;border:none;cursor:pointer;padding:0;',
-      'font:400 11px/1 Inter,system-ui;color:var(--zp-primary);',
-      'text-decoration:underline;opacity:.75;transition:opacity .15s;outline:none}',
-      '#zp-lead-btn:hover{opacity:1}',
-      '#zp-lead-btn:focus-visible{outline:2px solid var(--zp-primary);outline-offset:2px}',
-      '#zp-lead-btn[disabled]{opacity:.35;cursor:default;pointer-events:none}',
-      '#zp-footer-sep{font:400 11px/1 Inter,system-ui;color:'+footerC+'}',
+      // ── Footer bar — Powered by only ──
+      '#zp-footer{display:flex;align-items:center;justify-content:center;',
+      'padding:4px 14px 8px;flex-shrink:0}',
       '#zp-footer-brand{font:400 11px/1 Inter,system-ui;color:'+footerC+'}',
       '#zp-footer-brand a{color:'+footerA+';text-decoration:none}',
       '#zp-footer-brand a:hover{color:var(--zp-primary)}',
+
+      // ── Lead capture chip (inside suggestion row) ──
+      '.zp-lead-chip{border-color:var(--zp-primary)!important;color:var(--zp-primary)!important;',
+      'font-weight:500!important}',
+      '.zp-lead-chip:hover{background:var(--zp-primary)!important;color:#fff!important}',
 
       // ── Mobile: true full screen below 768 px ──
       '@media(max-width:767px){',
@@ -603,15 +605,8 @@
       img.alt = '';
       icon.appendChild(img);
     } else {
-      // No logo: show first letter on primaryColor background
-      if (cfg) {
-        var letter = document.createElement('span');
-        letter.className = 'zp-btn-letter';
-        letter.textContent = getDisplayName(cfg).charAt(0).toUpperCase();
-        icon.appendChild(letter);
-      } else {
-        icon.innerHTML = ICONS.chat;
-      }
+      // No logo: robot/AI SVG on primaryColor background (white stroke from CSS)
+      icon.innerHTML = ICONS.bot;
     }
 
     // Flashing green dot
@@ -695,8 +690,6 @@
       '</div>',
       // Footer bar
       '<div id="zp-footer">',
-        '<button id="zp-lead-btn" aria-label="Leave your details">Leave your details</button>',
-        '<span id="zp-footer-sep">\u00B7</span>',
         '<span id="zp-footer-brand">Powered by <a href="https://zempotis.com" target="_blank" rel="noopener">Zempotis</a></span>',
       '</div>',
     ].join('');
@@ -707,7 +700,6 @@
     win.querySelector('#zp-min-btn').addEventListener('click', minimise);
     win.querySelector('#zp-close-btn').addEventListener('click', closeChat);
     win.querySelector('#zp-sound-btn').addEventListener('click', toggleSound);
-    win.querySelector('#zp-lead-btn').addEventListener('click', toggleLeadForm);
     win.querySelector('#zp-lead-submit').addEventListener('click', submitLead);
 
     // Scroll pill
@@ -850,7 +842,9 @@
 
   function appendSuggestions(bubbleWrap, responseText) {
     var chips = getSuggestionChips(responseText);
-    if (!chips.length) return;
+    var showLead = !state.leadCaptured;
+
+    if (!chips.length && !showLead) return;
 
     var row = document.createElement('div');
     row.className = 'zp-suggestions';
@@ -870,6 +864,16 @@
       row.appendChild(btn);
     });
 
+    // Lead capture chip — styled distinctly, removed once details submitted
+    if (showLead) {
+      var leadBtn = document.createElement('button');
+      leadBtn.className = 'zp-suggestion zp-lead-chip';
+      leadBtn.innerHTML = '\uD83D\uDCCB Leave your details';
+      leadBtn.setAttribute('aria-label', 'Leave your details');
+      leadBtn.addEventListener('click', function () { toggleLeadForm(); });
+      row.appendChild(leadBtn);
+    }
+
     bubbleWrap.appendChild(row);
   }
 
@@ -885,10 +889,11 @@
       img.alt = '';
       av.appendChild(img);
     } else {
-      var letter = document.createElement('span');
-      letter.className = 'zp-av-letter';
-      letter.textContent = (cfg ? getDisplayName(cfg) : 'S').charAt(0).toUpperCase();
-      av.appendChild(letter);
+      // Robot/AI SVG fallback — never show a letter
+      var robot = document.createElement('span');
+      robot.className = 'zp-robot-msg';
+      robot.innerHTML = ICONS.bot;
+      av.appendChild(robot);
     }
     return av;
   }

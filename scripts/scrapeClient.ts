@@ -188,9 +188,15 @@ interface ColourEntry { hex: string; weight: number }
  * Groups similar shades (±16 per channel) and rank by total weight.
  */
 async function detectBrandColours(page: Page): Promise<{ primaryColor: string; accentColor: string }> {
-  // Use string form of evaluate so tsx/esbuild never transforms this code
-  // and cannot inject __name() helpers into the browser context.
-  const entries: ColourEntry[] = await page.evaluate(`(function() {
+  // Uses IIFE string form — tsx/esbuild never transforms string content.
+  // Priority: meta theme-color > CSS vars > buttons > nav/header > hero
+  // Filters: S>20%, L 10–78% (excludes greys, near-black, and light pastels)
+  const iife = `(function() {
+    // Remove Zempotis widget so its own buttons/styles don't pollute detection
+    document.querySelectorAll('#zp-btn,#zp-win,#zp-overlay,#zp-toast').forEach(function(el) {
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+
     function parseRgb(str) {
       if (!str) return null;
       var m = str.match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/);
@@ -220,7 +226,8 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
     }
     function isUsable(r, g, b) {
       var hsl = rgbToHsl(r, g, b);
-      return hsl[1] > 15 && hsl[2] > 10 && hsl[2] < 90;
+      // S>15% avoids greys; L 10-88% avoids near-black and near-white
+      return hsl[1] > 15 && hsl[2] > 10 && hsl[2] < 88;
     }
     function bucketHex(r, g, b) {
       function snap(v) { return Math.min(255, Math.round(v / 32) * 32); }
@@ -237,7 +244,7 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
       counts[key] = (counts[key] || 0) + weight;
     }
 
-    // 1. meta theme-color
+    // 1. meta theme-color (most explicit)
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) add(meta.getAttribute('content') || '', 20);
 
@@ -254,33 +261,53 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
       'button:not([disabled]), [type="submit"], .btn, [class*="btn-primary"], [class*="cta"], a[class*="button"]'
     ).forEach(function(el) { add(getComputedStyle(el).backgroundColor, 8); });
 
-    // 4. Navigation / header
+    // 4. Navigation / header background
     ['nav','header','[role="navigation"]','.navbar','#navbar','.header','#header'].forEach(function(sel) {
       document.querySelectorAll(sel).forEach(function(el) {
         var s = getComputedStyle(el);
         add(s.backgroundColor, 6);
         add(s.borderBottomColor, 3);
-        add(s.color, 2);
       });
     });
 
-    // 5. Hero / banner
+    // 5. Hero / banner background
     ['.hero','#hero','[class*="hero"]','[class*="banner"]','main > section:first-child'].forEach(function(sel) {
       var el = document.querySelector(sel);
       if (el) add(getComputedStyle(el).backgroundColor, 5);
     });
 
-    // 6. Links
-    document.querySelectorAll('a').forEach(function(el) { add(getComputedStyle(el).color, 4); });
-
-    // 7. Headings
+    // 6. Headings (brand colours often appear in h1/h2 text)
     document.querySelectorAll('h1, h2').forEach(function(el) { add(getComputedStyle(el).color, 3); });
+
+    // 7. All non-widget elements — any computed color/bg appearing on 3+ elements
+    //    (catches Tailwind utility classes not covered by structural selectors)
+    var freq = {};
+    document.querySelectorAll('*:not(#zp-btn):not(#zp-win):not(#zp-overlay)').forEach(function(el) {
+      if (el.id && /^zp-/.test(el.id)) return;
+      var s = getComputedStyle(el);
+      [s.backgroundColor, s.color, s.borderColor].forEach(function(c) {
+        if (!c || c === 'transparent' || c === 'rgba(0, 0, 0, 0)' || c === 'inherit') return;
+        var rgb = parseRgb(c);
+        if (rgb && isUsable(rgb[0], rgb[1], rgb[2])) {
+          var key = bucketHex(rgb[0], rgb[1], rgb[2]);
+          freq[key] = (freq[key] || 0) + 1;
+        }
+      });
+    });
+    // Only add colours that appear on 3+ elements (brand colours repeat; noise doesn't)
+    Object.keys(freq).forEach(function(key) {
+      if (freq[key] >= 3) {
+        counts[key] = (counts[key] || 0) + freq[key];
+      }
+    });
 
     return Object.entries(counts)
       .sort(function(a, b) { return b[1] - a[1]; })
       .slice(0, 10)
       .map(function(e) { return { hex: e[0], weight: e[1] }; });
-  })()`);
+  })()`;
+
+  const entries = await page.evaluate(iife) as unknown as ColourEntry[];
 
   console.log('  🎨 Colour candidates:', entries.map(e => `${e.hex}(${e.weight})`).join(', '));
 
@@ -637,19 +664,9 @@ async function scrape() {
           primaryColor = colours.primaryColor;
           accentColor  = colours.accentColor;
 
-          // Logo extraction
+          // Logo extraction (display only — never overrides CSS-detected colours)
           logoUrl = await extractLogo(page, origin);
           console.log(`  🖼️  Logo: ${logoUrl ? 'found' : 'not found'}`);
-
-          // Logo-derived colour extraction (60% weight — prefer logo over CSS)
-          if (logoUrl && logoUrl.startsWith('data:')) {
-            const logoColors = extractLogoColors(logoUrl);
-            if (logoColors && logoColors.length > 0) {
-              primaryColor = logoColors[0] ?? primaryColor;
-              if (logoColors[1]) accentColor = logoColors[1];
-              console.log(`  🎨 Logo colours applied: primary=${primaryColor} accent=${accentColor}`);
-            }
-          }
 
           console.log(`  ✅ primaryColor: ${primaryColor}  accentColor: ${accentColor}`);
         }
