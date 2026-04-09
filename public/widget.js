@@ -30,7 +30,7 @@
   var CLIENT_ID = (typeof window !== 'undefined' && window.ZEMPOTIS_CLIENT_ID)
     || (SCRIPT_TAG && SCRIPT_TAG.getAttribute('data-client'))
     || null;
-  var API_BASE = 'https://chatbot-product.vercel.app';
+  var API_BASE = 'https://chatbot-product-flax.vercel.app';
 
   if (!CLIENT_ID) {
     console.warn('[Zempotis] Missing data-client attribute.');
