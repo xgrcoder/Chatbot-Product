@@ -88,18 +88,20 @@ function normaliseUrl(href: string, base: string): string | null {
 
 // ── content extraction ────────────────────────────────────────────────────────
 async function extractContent(page: Page): Promise<{ text: string; headings: string[] }> {
-  return page.evaluate(() => {
+  // Use string form of evaluate — tsx/esbuild never transforms string content,
+  // so no __name helpers are injected into the browser context.
+  return page.evaluate(`(function() {
     ['script','style','noscript','iframe','nav','footer','header',
-     '.cookie-banner','#cookie-banner','[aria-hidden="true"]'].forEach(sel => {
-      document.querySelectorAll(sel).forEach(el => el.remove());
+     '.cookie-banner','#cookie-banner','[aria-hidden="true"]'].forEach(function(sel) {
+      document.querySelectorAll(sel).forEach(function(el) { el.remove(); });
     });
-    const headings: string[] = [];
-    document.querySelectorAll('h1,h2,h3,h4').forEach(h => {
-      const t = (h as HTMLElement).innerText?.trim();
+    var headings = [];
+    document.querySelectorAll('h1,h2,h3,h4').forEach(function(h) {
+      var t = h.innerText && h.innerText.trim();
       if (t) headings.push(t);
     });
-    return { text: (document.body as HTMLElement).innerText ?? '', headings };
-  });
+    return { text: document.body.innerText || '', headings: headings };
+  })()`);
 }
 
 // ── colour detection ──────────────────────────────────────────────────────────
@@ -120,87 +122,76 @@ interface ColourEntry { hex: string; weight: number }
  * Groups similar shades (±16 per channel) and rank by total weight.
  */
 async function detectBrandColours(page: Page): Promise<{ primaryColor: string; accentColor: string }> {
-  const entries: ColourEntry[] = await page.evaluate((): ColourEntry[] => {
-    // ── colour math helpers ──────────────────────────────────────────────────
-    function parseRgb(str: string): [number, number, number] | null {
+  // Use string form of evaluate so tsx/esbuild never transforms this code
+  // and cannot inject __name() helpers into the browser context.
+  const entries: ColourEntry[] = await page.evaluate(`(function() {
+    function parseRgb(str) {
       if (!str) return null;
-      const m = str.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+      var m = str.match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/);
       if (m) {
-        // ignore fully transparent
-        const aMatch = str.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)/);
+        var aMatch = str.match(/rgba\\([^,]+,[^,]+,[^,]+,\\s*([\\d.]+)/);
         if (aMatch && parseFloat(aMatch[1]) === 0) return null;
         return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
       }
-      let h = str.trim().replace(/^#/, '');
+      var h = str.trim().replace(/^#/, '');
       if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
-      if (/^[0-9a-fA-F]{6}$/.test(h)) {
+      if (/^[0-9a-fA-F]{6}$/.test(h))
         return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
-      }
       return null;
     }
-
-    function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+    function rgbToHsl(r, g, b) {
       r /= 255; g /= 255; b /= 255;
-      const max = Math.max(r,g,b), min = Math.min(r,g,b);
-      const l = (max + min) / 2;
+      var max = Math.max(r,g,b), min = Math.min(r,g,b);
+      var l = (max + min) / 2;
       if (max === min) return [0, 0, Math.round(l * 100)];
-      const d = max - min;
-      const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-      let h = 0;
-      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-      else if (max === g) h = ((b - r) / d + 2) / 6;
-      else h = ((r - g) / d + 4) / 6;
-      return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
+      var d = max - min;
+      var s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      var hh = 0;
+      if (max === r) hh = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) hh = ((b - r) / d + 2) / 6;
+      else hh = ((r - g) / d + 4) / 6;
+      return [Math.round(hh * 360), Math.round(s * 100), Math.round(l * 100)];
     }
-
-    function isUsable(r: number, g: number, b: number): boolean {
-      const [, s, l] = rgbToHsl(r, g, b);
-      return s > 15 && l > 10 && l < 90;
+    function isUsable(r, g, b) {
+      var hsl = rgbToHsl(r, g, b);
+      return hsl[1] > 15 && hsl[2] > 10 && hsl[2] < 90;
     }
-
-    // Snap each channel to nearest 32 to group near-identical shades
-    function bucketHex(r: number, g: number, b: number): string {
-      const snap = (v: number) => Math.min(255, Math.round(v / 32) * 32);
-      return '#' + [snap(r), snap(g), snap(b)]
-        .map(x => x.toString(16).padStart(2,'0')).join('');
+    function bucketHex(r, g, b) {
+      function snap(v) { return Math.min(255, Math.round(v / 32) * 32); }
+      return '#' + [snap(r), snap(g), snap(b)].map(function(x) {
+        return x.toString(16).padStart(2,'0');
+      }).join('');
     }
-
-    const counts = new Map<string, number>();
-    function add(str: string, weight: number) {
+    var counts = {};
+    function add(str, weight) {
       if (!str || str === 'transparent' || str === 'inherit' || str === 'currentcolor') return;
-      const rgb = parseRgb(str);
-      if (!rgb || !isUsable(...rgb)) return;
-      const key = bucketHex(...rgb);
-      counts.set(key, (counts.get(key) ?? 0) + weight);
+      var rgb = parseRgb(str);
+      if (!rgb || !isUsable(rgb[0], rgb[1], rgb[2])) return;
+      var key = bucketHex(rgb[0], rgb[1], rgb[2]);
+      counts[key] = (counts[key] || 0) + weight;
     }
 
     // 1. meta theme-color
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) add(meta.getAttribute('content') ?? '', 20);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) add(meta.getAttribute('content') || '', 20);
 
     // 2. :root CSS custom properties
-    const root = getComputedStyle(document.documentElement);
-    [
-      '--primary','--primary-color','--color-primary','--brand-color','--brand-primary',
-      '--accent','--accent-color','--color-accent','--color-brand','--color-link',
-      '--theme-color','--color-theme','--highlight-color','--link-color',
-      '--wp--preset--color--primary','--wp--preset--color--secondary',
-    ].forEach(v => add(root.getPropertyValue(v).trim(), 10));
+    var root = getComputedStyle(document.documentElement);
+    ['--primary','--primary-color','--color-primary','--brand-color','--brand-primary',
+     '--accent','--accent-color','--color-accent','--color-brand','--color-link',
+     '--theme-color','--color-theme','--highlight-color','--link-color',
+     '--wp--preset--color--primary','--wp--preset--color--secondary'
+    ].forEach(function(v) { add(root.getPropertyValue(v).trim(), 10); });
 
-    // 3. Buttons and CTAs — most reliable brand signal
+    // 3. Buttons / CTAs
     document.querySelectorAll(
-      'button:not([disabled]), [type="submit"], .btn, [class*="btn-primary"], ' +
-      '[class*="cta"], a[class*="button"], [class*="Button"]'
-    ).forEach(el => {
-      const s = getComputedStyle(el as HTMLElement);
-      add(s.backgroundColor, 8);
-    });
+      'button:not([disabled]), [type="submit"], .btn, [class*="btn-primary"], [class*="cta"], a[class*="button"]'
+    ).forEach(function(el) { add(getComputedStyle(el).backgroundColor, 8); });
 
     // 4. Navigation / header
-    ['nav','header','[role="navigation"]','.navbar','#navbar','.header','#header',
-     '[class*="navbar"]','[class*="nav-"]'].forEach(sel => {
-      document.querySelectorAll(sel).forEach(el => {
-        const s = getComputedStyle(el as HTMLElement);
+    ['nav','header','[role="navigation"]','.navbar','#navbar','.header','#header'].forEach(function(sel) {
+      document.querySelectorAll(sel).forEach(function(el) {
+        var s = getComputedStyle(el);
         add(s.backgroundColor, 6);
         add(s.borderBottomColor, 3);
         add(s.color, 2);
@@ -208,27 +199,22 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
     });
 
     // 5. Hero / banner
-    ['.hero','#hero','[class*="hero"]','[class*="banner"]',
-     '[class*="jumbotron"]','main > section:first-child','section:first-of-type'].forEach(sel => {
-      const el = document.querySelector(sel);
-      if (el) add(getComputedStyle(el as HTMLElement).backgroundColor, 5);
+    ['.hero','#hero','[class*="hero"]','[class*="banner"]','main > section:first-child'].forEach(function(sel) {
+      var el = document.querySelector(sel);
+      if (el) add(getComputedStyle(el).backgroundColor, 5);
     });
 
-    // 6. Link colours
-    document.querySelectorAll('a').forEach(el => {
-      add(getComputedStyle(el).color, 4);
-    });
+    // 6. Links
+    document.querySelectorAll('a').forEach(function(el) { add(getComputedStyle(el).color, 4); });
 
-    // 7. Heading colours
-    document.querySelectorAll('h1, h2').forEach(el => {
-      add(getComputedStyle(el as HTMLElement).color, 3);
-    });
+    // 7. Headings
+    document.querySelectorAll('h1, h2').forEach(function(el) { add(getComputedStyle(el).color, 3); });
 
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
+    return Object.entries(counts)
+      .sort(function(a, b) { return b[1] - a[1]; })
       .slice(0, 10)
-      .map(([hex, weight]) => ({ hex, weight }));
-  });
+      .map(function(e) { return { hex: e[0], weight: e[1] }; });
+  })()`);
 
   console.log('  🎨 Colour candidates:', entries.map(e => `${e.hex}(${e.weight})`).join(', '));
 
@@ -331,8 +317,8 @@ async function scrape() {
         allChunks = allChunks.concat(chunks);
         console.log(`${chunks.length} chunks`);
 
-        const hrefs: string[] = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('a[href]')).map(a => (a as HTMLAnchorElement).href)
+        const hrefs: string[] = await page.evaluate(
+          `Array.from(document.querySelectorAll('a[href]')).map(function(a){ return a.href; })`
         );
         for (const href of hrefs) {
           const norm = normaliseUrl(href, origin);
