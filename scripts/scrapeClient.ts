@@ -3,27 +3,29 @@ import { resolve } from 'path';
 config({ path: resolve(process.cwd(), '.env.local') });
 
 /**
- * Zempotis Chat — Premium Client Scraper v3.0
+ * Zempotis Chat — Premium Client Scraper v4.0
  *
  * Usage:
  *   npx tsx scripts/scrapeClient.ts <clientId> <url>
  *
- * Example:
- *   npx tsx scripts/scrapeClient.ts organic-trust https://www.organictrust.co.uk
- *
- * What it does:
- *   1. Crawls up to 30 pages with Puppeteer (same-origin only)
- *   2. Deep content extraction: expands accordions, JSON-LD, meta tags, tables, price elements
- *   3. Advanced colour detection (CSS) + logo-derived colour extraction
- *   4. Logo extraction: downloads logo and converts to base64 data URL
- *   5. Splits content into chunks and generates 384-dim embeddings
- *   6. Uploads chunks to Supabase client_embeddings table
- *   7. Upserts client config to Supabase clients table (includes logo_url)
- *   8. Saves a local JSON backup to public/clients/{clientId}.json
- *   9. Prints the embed code snippet
+ * New in v4.0:
+ *   - puppeteer-extra stealth plugin (anti-bot bypass)
+ *   - Realistic Chrome UA + browser headers
+ *   - Random delays between page visits (1–3 s)
+ *   - Cookie banner auto-dismiss (OneTrust, Cookiebot, text-based)
+ *   - Full-page scroll to trigger lazy loading
+ *   - Platform detection: Wix / WordPress / Squarespace / Shopify / custom
+ *   - WordPress REST API (/wp-json/wp/v2/pages+posts) for clean content
+ *   - Shopify JSON endpoints (/products.json, /collections.json)
+ *   - Sitemap crawling (/sitemap.xml, /sitemap_index.xml)
+ *   - Retry logic — up to 3 attempts with back-off; graceful 403/429 skip
+ *   - Improved content cleaning: focus main/article, deduplicate lines
  */
 
-import puppeteer, { Browser, Page } from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+import { Browser, Page } from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
 import { pipeline } from '@xenova/transformers';
 import * as fs from 'fs';
@@ -32,16 +34,17 @@ import * as https from 'https';
 import * as http from 'http';
 import * as zlib from 'zlib';
 
-// ── env ─────────────────────────────────────────────────────────────────────
+puppeteer.use(StealthPlugin());
+
+// ── env ──────────────────────────────────────────────────────────────────────
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
-
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('ERROR: Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local');
   process.exit(1);
 }
 
-// ── args ─────────────────────────────────────────────────────────────────────
+// ── args ──────────────────────────────────────────────────────────────────────
 const [clientId, startUrl] = process.argv.slice(2);
 if (!clientId || !startUrl) {
   console.error('Usage: npx tsx scripts/scrapeClient.ts <clientId> <url>');
@@ -51,6 +54,9 @@ if (!clientId || !startUrl) {
 // ── constants ─────────────────────────────────────────────────────────────────
 const MAX_PAGES = 30;
 const MAX_CHUNK_WORDS = 250;
+const CHROME_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // ── supabase ──────────────────────────────────────────────────────────────────
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -67,7 +73,6 @@ async function getEmbedder() {
   }
   return embedPipeline;
 }
-
 async function embedText(text: string): Promise<number[]> {
   const pipe = await getEmbedder();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -86,25 +91,252 @@ function normaliseUrl(href: string, base: string): string | null {
   } catch { return null; }
 }
 
+function randomDelay(min: number, max: number): Promise<void> {
+  const ms = Math.floor(Math.random() * (max - min + 1)) + min;
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ── http download (sitemap, logo, WP/Shopify APIs) ───────────────────────────
+function downloadUrl(urlStr: string): Promise<{ buffer: Buffer; contentType: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    mod.get(urlStr, { headers: { 'User-Agent': CHROME_UA } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        downloadUrl(res.headers.location).then(resolve).catch(reject);
+        return;
+      }
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        reject(new Error(`HTTP ${res.statusCode} for ${urlStr}`));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      const ct = (res.headers['content-type'] || 'application/octet-stream').split(';')[0].trim();
+      if (res.headers['content-encoding'] === 'gzip') {
+        const gunzip = zlib.createGunzip();
+        res.pipe(gunzip);
+        gunzip.on('data', (chunk: Buffer) => chunks.push(chunk));
+        gunzip.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: ct }));
+        gunzip.on('error', reject);
+        res.on('error', reject);
+      } else {
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: ct }));
+        res.on('error', reject);
+      }
+    }).on('error', reject);
+  });
+}
+
+// ── platform detection ────────────────────────────────────────────────────────
+async function detectPlatform(page: Page): Promise<string> {
+  const iife = `(function() {
+    var scripts = Array.from(document.querySelectorAll('script[src]')).map(function(s) { return s.src || ''; }).join(' ');
+    var links   = Array.from(document.querySelectorAll('link[href]')).map(function(l) { return l.href || ''; }).join(' ');
+    var meta    = document.querySelector('meta[name="generator"]');
+    var gen     = meta ? (meta.getAttribute('content') || '').toLowerCase() : '';
+    if (scripts.includes('wix.com') || !!document.querySelector('[data-mesh-id]')) return 'wix';
+    if (gen.includes('wordpress') || scripts.includes('/wp-content/') || links.includes('/wp-content/')) return 'wordpress';
+    if (scripts.includes('squarespace.com') || scripts.includes('squarespace-cdn')) return 'squarespace';
+    if (scripts.includes('shopify.com') || scripts.includes('cdn.shopify.com')) return 'shopify';
+    return 'custom';
+  })()`;
+  try {
+    return (await page.evaluate(iife)) as unknown as string;
+  } catch { return 'custom'; }
+}
+
+// ── cookie banner dismiss ─────────────────────────────────────────────────────
+async function dismissCookieBanners(page: Page): Promise<void> {
+  const iife = `(function() {
+    var done = false;
+    // Known IDs from major consent frameworks
+    var ids = [
+      'onetrust-accept-btn-handler',
+      'CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+      'cookie-accept', 'cookie-consent-accept', 'accept-cookies',
+      'gdpr-accept', 'cc-accept', 'acceptAllCookies'
+    ];
+    for (var i = 0; i < ids.length && !done; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) { el.click(); done = true; }
+    }
+    // CSS class / attribute selectors
+    if (!done) {
+      var sels = [
+        '.cookie-accept', '.cc-btn.cc-allow', '.cc-allow',
+        '[class*="cookie-accept"]', '[class*="accept-cookie"]',
+        '#cookie-banner button[class*="accept"]',
+        '.cookie-banner button[class*="accept"]',
+        '.cookie-consent button[class*="accept"]',
+        '[data-cookiebanner] button',
+        '[aria-label*="Accept cookies"]'
+      ];
+      for (var j = 0; j < sels.length && !done; j++) {
+        var btn = document.querySelector(sels[j]);
+        if (btn) { btn.click(); done = true; }
+      }
+    }
+    // Text-based fallback across all buttons
+    if (!done) {
+      var phrases = ['accept all', 'accept cookies', 'accept', 'allow all', 'allow cookies',
+                     'allow', 'ok', 'got it', 'agree', 'i agree'];
+      var btns = document.querySelectorAll('button, a[role="button"]');
+      for (var k = 0; k < btns.length && !done; k++) {
+        var t = (btns[k].textContent || '').toLowerCase().trim();
+        for (var m = 0; m < phrases.length; m++) {
+          if (t === phrases[m] || t.startsWith(phrases[m] + ' ')) {
+            btns[k].click(); done = true; break;
+          }
+        }
+      }
+    }
+    return done;
+  })()`;
+  try {
+    await page.evaluate(iife);
+    await new Promise(r => setTimeout(r, 600));
+  } catch { /* best-effort */ }
+}
+
+// ── full-page scroll (triggers lazy loading) ──────────────────────────────────
+async function scrollPage(page: Page): Promise<void> {
+  try {
+    const totalHeight = (await page.evaluate('document.body.scrollHeight')) as unknown as number;
+    const step = 600;
+    for (let pos = step; pos < totalHeight; pos += step) {
+      await page.evaluate(`window.scrollTo(0, ${pos})`);
+      await new Promise(r => setTimeout(r, 150));
+    }
+    await page.evaluate('window.scrollTo(0, 0)');
+    await new Promise(r => setTimeout(r, 400));
+  } catch { /* best-effort */ }
+}
+
+// ── sitemap crawling ──────────────────────────────────────────────────────────
+async function fetchSitemapUrls(origin: string): Promise<string[]> {
+  const urls: string[] = [];
+
+  async function tryFetch(url: string): Promise<string | null> {
+    try { const { buffer } = await downloadUrl(url); return buffer.toString('utf-8'); }
+    catch { return null; }
+  }
+
+  async function parseSitemap(xml: string): Promise<void> {
+    if (xml.includes('<sitemapindex')) {
+      // Recurse into child sitemaps (cap at 8 to avoid runaway)
+      const locs = Array.from(xml.matchAll(/<loc>\s*([\s\S]*?)\s*<\/loc>/g)).map(m => m[1].trim());
+      for (const loc of locs.slice(0, 8)) {
+        const child = await tryFetch(loc);
+        if (child) await parseSitemap(child);
+      }
+      return;
+    }
+    Array.from(xml.matchAll(/<loc>\s*([\s\S]*?)\s*<\/loc>/g)).forEach(m => {
+      const u = m[1].trim();
+      if (u.startsWith(origin) && !u.match(/\.(xml|pdf|jpg|jpeg|png|gif|svg|css|js)$/i)) {
+        urls.push(u);
+      }
+    });
+  }
+
+  for (const p of ['/sitemap.xml', '/sitemap_index.xml', '/wp-sitemap.xml', '/sitemap/sitemap.xml']) {
+    const xml = await tryFetch(`${origin}${p}`);
+    if (xml && (xml.includes('<urlset') || xml.includes('<sitemapindex'))) {
+      await parseSitemap(xml);
+      break;
+    }
+  }
+
+  return Array.from(new Set(urls)).slice(0, MAX_PAGES * 3);
+}
+
+// ── shared types ──────────────────────────────────────────────────────────────
+interface ContentChunk { heading: string; content: string }
+
+// ── WordPress REST API ────────────────────────────────────────────────────────
+async function fetchWordPressContent(origin: string): Promise<ContentChunk[]> {
+  const chunks: ContentChunk[] = [];
+  const endpoints = [
+    `${origin}/wp-json/wp/v2/pages?per_page=100&_fields=title,content,slug`,
+    `${origin}/wp-json/wp/v2/posts?per_page=100&_fields=title,content,slug`,
+  ];
+  for (const endpoint of endpoints) {
+    try {
+      const { buffer } = await downloadUrl(endpoint);
+      const items = JSON.parse(buffer.toString('utf-8')) as Array<{
+        title?: { rendered?: string };
+        content?: { rendered?: string };
+      }>;
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        const title = (item.title?.rendered || '').replace(/<[^>]+>/g, '').trim();
+        const raw   = (item.content?.rendered || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (raw.length > 40) {
+          const words = raw.split(/\s+/);
+          for (let i = 0; i < words.length; i += MAX_CHUNK_WORDS) {
+            const slice = words.slice(i, i + MAX_CHUNK_WORDS).join(' ');
+            if (slice.length > 40) chunks.push({ heading: title, content: slice });
+          }
+        }
+      }
+    } catch { /* endpoint unavailable — fall back to crawling */ }
+  }
+  return chunks;
+}
+
+// ── Shopify JSON endpoints ────────────────────────────────────────────────────
+async function fetchShopifyContent(origin: string): Promise<string> {
+  let text = '';
+  try {
+    const { buffer } = await downloadUrl(`${origin}/products.json?limit=250`);
+    const data = JSON.parse(buffer.toString('utf-8')) as {
+      products?: Array<{ title: string; body_html: string; variants?: Array<{ price: string }> }>;
+    };
+    for (const p of data.products ?? []) {
+      const desc = p.body_html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      text += `\n\nProduct: ${p.title}\n${desc}`;
+      for (const v of p.variants ?? []) {
+        if (v.price) text += `\nPrice: £${v.price}`;
+      }
+    }
+  } catch { /* products.json unavailable */ }
+  try {
+    const { buffer } = await downloadUrl(`${origin}/collections.json?limit=250`);
+    const data = JSON.parse(buffer.toString('utf-8')) as {
+      collections?: Array<{ title: string; body_html: string }>;
+    };
+    for (const c of data.collections ?? []) {
+      const desc = c.body_html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      text += `\n\nCollection: ${c.title}\n${desc}`;
+    }
+  } catch { /* collections.json unavailable */ }
+  return text;
+}
+
 // ── content extraction ────────────────────────────────────────────────────────
 async function extractContent(page: Page): Promise<{ text: string; headings: string[] }> {
-  // Click all accordion/expand buttons, then wait for content to expand.
-  // Uses string IIFE form — tsx/esbuild never transforms string content,
-  // so no __name helpers are injected into the browser context.
+  // Click accordions / expandable sections first
   try {
     await page.evaluate(`(function(){
-    document.querySelectorAll(
-      '[aria-expanded="false"], .accordion-toggle, .faq-toggle, details summary, [data-toggle], [data-bs-toggle]'
-    ).forEach(function(el) { el.click(); });
-  })()`);
-  } catch { /* accordion clicks are best-effort */ }
+      document.querySelectorAll(
+        '[aria-expanded="false"], .accordion-toggle, .faq-toggle, details summary, [data-toggle], [data-bs-toggle]'
+      ).forEach(function(el) { el.click(); });
+    })()`);
+  } catch { /* best-effort */ }
 
   await new Promise(r => setTimeout(r, 500));
 
   const iife = `(function() {
-    ['script','style','noscript','iframe','nav','footer','header',
-     '.cookie-banner','#cookie-banner','[aria-hidden="true"]'].forEach(function(sel) {
-      document.querySelectorAll(sel).forEach(function(el) { el.remove(); });
+    // Remove noise: nav chrome, cookie banners, popups, modals
+    ['script','style','noscript','iframe','nav','footer','header','aside',
+     '.cookie-banner','#cookie-banner','[aria-hidden="true"]',
+     '[class*="cookie"]','[id*="cookie"]','[class*="consent"]',
+     '[class*="gdpr"]','[class*="popup"]','[id*="popup"]',
+     '[class*="modal"]','[id*="modal"]','[class*="overlay"]',
+     '[role="dialog"]','[role="alertdialog"]'
+    ].forEach(function(sel) {
+      try { document.querySelectorAll(sel).forEach(function(el) { el.remove(); }); } catch(e) {}
     });
 
     var headings = [];
@@ -115,10 +347,14 @@ async function extractContent(page: Page): Promise<{ text: string; headings: str
 
     var parts = [];
 
-    // Base body text
-    parts.push(document.body.innerText || '');
+    // Prefer scoped content areas over full body (avoids nav/footer leakage)
+    var mainEl = document.querySelector(
+      'main, [role="main"], article, #content, .content, .main-content, ' +
+      '.entry-content, .page-content, .post-content, #main, .site-content'
+    );
+    parts.push(mainEl ? (mainEl.innerText || '') : (document.body ? (document.body.innerText || '') : ''));
 
-    // JSON-LD schema text values
+    // JSON-LD structured data
     var extractStrings = function(v) {
       if (typeof v === 'string' && v.length > 2) return v;
       if (Array.isArray(v)) return v.map(extractStrings).filter(Boolean).join(' ');
@@ -126,34 +362,22 @@ async function extractContent(page: Page): Promise<{ text: string; headings: str
       return '';
     };
     document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s) {
-      try {
-        var obj = JSON.parse(s.textContent || '');
-        var txt = extractStrings(obj);
-        if (txt) parts.push(txt);
-      } catch(e) {}
+      try { var txt = extractStrings(JSON.parse(s.textContent || '')); if (txt) parts.push(txt); } catch(e) {}
     });
 
-    // Meta description
-    var metaDesc = document.querySelector('meta[name="description"]');
-    if (metaDesc) {
-      var mc = metaDesc.getAttribute('content');
-      if (mc) parts.push(mc);
-    }
+    // Meta / OG descriptions
+    var md = document.querySelector('meta[name="description"]');
+    if (md) { var mc = md.getAttribute('content'); if (mc) parts.push(mc); }
+    var og = document.querySelector('meta[property="og:description"]');
+    if (og) { var oc = og.getAttribute('content'); if (oc) parts.push(oc); }
 
-    // OG description
-    var ogDesc = document.querySelector('meta[property="og:description"]');
-    if (ogDesc) {
-      var oc = ogDesc.getAttribute('content');
-      if (oc) parts.push(oc);
-    }
-
-    // Table text
+    // Tables
     document.querySelectorAll('table').forEach(function(tbl) {
       var tt = tbl.innerText && tbl.innerText.trim();
       if (tt) parts.push(tt);
     });
 
-    // Price context: elements whose innerText contains currency symbols
+    // Price context
     var priceTexts = [];
     document.querySelectorAll('*').forEach(function(el) {
       var t = el.innerText;
@@ -164,33 +388,32 @@ async function extractContent(page: Page): Promise<{ text: string; headings: str
     });
     if (priceTexts.length) parts.push(priceTexts.join('\\n'));
 
-    return { text: parts.join('\\n\\n'), headings: headings };
+    // Deduplicate lines — removes repeated nav/footer text that appears on every page
+    var seen = {};
+    var dedupedLines = parts.join('\\n\\n').split('\\n').filter(function(line) {
+      var t = line.trim();
+      if (!t) return false;
+      if (t.length < 25) return true;  // keep short lines: headings, labels, prices
+      if (seen[t]) return false;
+      seen[t] = true;
+      return true;
+    });
+
+    return { text: dedupedLines.join('\\n'), headings: headings };
   })()`;
 
   return page.evaluate(iife) as unknown as Promise<{ text: string; headings: string[] }>;
 }
 
 // ── colour detection ──────────────────────────────────────────────────────────
-
 interface ColourEntry { hex: string; weight: number }
 
 /**
- * Extract brand colours using multiple techniques ranked by confidence:
- *  1. meta[name="theme-color"]         — most explicit (weight 20)
- *  2. :root CSS custom properties      — common in modern sites (weight 10)
- *  3. Buttons / CTA elements           — almost always brand primary (weight 8)
- *  4. Navigation / header background   — secondary brand colour (weight 6)
- *  5. Hero / banner background         — often brand gradient start (weight 5)
- *  6. Link colours                     — brand accent (weight 4)
- *  7. Heading colours                  — text brand colour (weight 3)
- *
- * Filters out near-white (L>90%), near-black (L<10%), and greys (S<15%).
- * Groups similar shades (±16 per channel) and rank by total weight.
+ * Extract brand colours using multiple techniques ranked by confidence.
+ * Filters: S>15%, L 10–88% (excludes greys, near-black, near-white).
+ * Removes the Zempotis widget from the DOM first to avoid self-pollution.
  */
 async function detectBrandColours(page: Page): Promise<{ primaryColor: string; accentColor: string }> {
-  // Uses IIFE string form — tsx/esbuild never transforms string content.
-  // Priority: meta theme-color > CSS vars > buttons > nav/header > hero
-  // Filters: S>20%, L 10–78% (excludes greys, near-black, and light pastels)
   const iife = `(function() {
     // Remove Zempotis widget so its own buttons/styles don't pollute detection
     document.querySelectorAll('#zp-btn,#zp-win,#zp-overlay,#zp-toast').forEach(function(el) {
@@ -279,8 +502,7 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
     // 6. Headings (brand colours often appear in h1/h2 text)
     document.querySelectorAll('h1, h2').forEach(function(el) { add(getComputedStyle(el).color, 3); });
 
-    // 7. All non-widget elements — any computed color/bg appearing on 3+ elements
-    //    (catches Tailwind utility classes not covered by structural selectors)
+    // 7. Broad frequency scan — catches Tailwind utility classes not covered above
     var freq = {};
     document.querySelectorAll('*:not(#zp-btn):not(#zp-win):not(#zp-overlay)').forEach(function(el) {
       if (el.id && /^zp-/.test(el.id)) return;
@@ -294,11 +516,9 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
         }
       });
     });
-    // Only add colours that appear on 3+ elements (brand colours repeat; noise doesn't)
+    // Only add colours appearing on 3+ elements (brand colours repeat; noise doesn't)
     Object.keys(freq).forEach(function(key) {
-      if (freq[key] >= 3) {
-        counts[key] = (counts[key] || 0) + freq[key];
-      }
+      if (freq[key] >= 3) { counts[key] = (counts[key] || 0) + freq[key]; }
     });
 
     return Object.entries(counts)
@@ -308,97 +528,47 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
   })()`;
 
   const entries = await page.evaluate(iife) as unknown as ColourEntry[];
-
   console.log('  🎨 Colour candidates:', entries.map(e => `${e.hex}(${e.weight})`).join(', '));
-
   const primaryColor = entries[0]?.hex ?? '#2563eb';
   const accentColor  = entries[1]?.hex ?? '#7c3aed';
   return { primaryColor, accentColor };
 }
 
 // ── logo extraction ───────────────────────────────────────────────────────────
-
-/**
- * Download a URL and return { buffer, contentType }.
- * Follows redirects. Works with both http and https.
- */
-function downloadUrl(urlStr: string): Promise<{ buffer: Buffer; contentType: string }> {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(urlStr);
-    const mod = parsed.protocol === 'https:' ? https : http;
-    mod.get(urlStr, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ZempotisBot/1.0)' } }, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // Follow redirect
-        downloadUrl(res.headers.location).then(resolve).catch(reject);
-        return;
-      }
-      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-        reject(new Error(`HTTP ${res.statusCode} for ${urlStr}`));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => resolve({
-        buffer: Buffer.concat(chunks),
-        contentType: (res.headers['content-type'] || 'image/png').split(';')[0].trim(),
-      }));
-      res.on('error', reject);
-    }).on('error', reject);
-  });
-}
-
-/**
- * Find and download the site logo. Returns a base64 data URL, a plain URL
- * as fallback, or null if nothing is found.
- */
 async function extractLogo(page: Page, origin: string): Promise<string | null> {
-  // Find the logo URL in the page using prioritised heuristics.
-  // Uses IIFE string form — no TypeScript, no const/let, plain var.
-  const rawUrl: string | null = await page.evaluate(`(function() {
+  const rawUrl = await page.evaluate(`(function() {
     // 1. header/nav img whose src contains "logo"
     var navImgs = document.querySelectorAll('header img, nav img, .header img, .navbar img');
     for (var i = 0; i < navImgs.length; i++) {
       var src = navImgs[i].src || '';
       if (src && /logo/i.test(src)) return src;
     }
-
     // 2. Any img whose alt contains "logo"
     var allImgs = document.querySelectorAll('img');
     for (var j = 0; j < allImgs.length; j++) {
       var alt = allImgs[j].alt || '';
       if (/logo/i.test(alt) && allImgs[j].src) return allImgs[j].src;
     }
-
     // 3. First img inside header or nav (regardless of name)
     var firstHeaderImg = document.querySelector('header img, nav img, .header img, .navbar img');
     if (firstHeaderImg && firstHeaderImg.src) return firstHeaderImg.src;
-
     // 4. apple-touch-icon
     var touch = document.querySelector('link[rel="apple-touch-icon"]');
     if (touch && touch.href) return touch.href;
-
     // 5. favicon with image type
     var favicon = document.querySelector('link[rel="icon"][type*="image"], link[rel="shortcut icon"]');
     if (favicon && favicon.href) return favicon.href;
-
     // 6. og:image
     var og = document.querySelector('meta[property="og:image"]');
     if (og && og.content) return og.content;
-
     return null;
-  })()`);
+  })()`) as unknown as string | null;
 
   if (!rawUrl) return null;
-
-  // Resolve relative URLs against origin
   let absoluteUrl: string;
   try {
     absoluteUrl = new URL(rawUrl, origin).href;
-  } catch {
-    return rawUrl;
-  }
-
-  // Download and convert to base64 data URL
+  } catch { return rawUrl; }
   try {
     const { buffer, contentType } = await downloadUrl(absoluteUrl);
     return `data:${contentType};base64,${buffer.toString('base64')}`;
@@ -408,178 +578,7 @@ async function extractLogo(page: Page, origin: string): Promise<string | null> {
   }
 }
 
-// ── logo colour extraction ────────────────────────────────────────────────────
-
-/**
- * Parse a PNG buffer and extract dominant brand colours.
- *
- * Strategy:
- *   - Find IDAT chunks, inflate them, interpret as RGBA scanlines
- *   - Sample every 4th pixel
- *   - Build colour frequency map
- *   - Filter near-white (L>85%), near-black (L<15%), transparent (alpha<128), grey (S<20%)
- *   - Return top 2 hex colours
- *
- * Falls back to a simpler byte-scan approach if full PNG parsing fails.
- */
-function extractLogoColors(logoDataUrl: string): string[] | null {
-  if (!logoDataUrl.startsWith('data:')) return null;
-
-  const isPng = logoDataUrl.startsWith('data:image/png');
-
-  // Decode base64 payload
-  const commaIdx = logoDataUrl.indexOf(',');
-  if (commaIdx === -1) return null;
-  const b64 = logoDataUrl.slice(commaIdx + 1);
-  const buf = Buffer.from(b64, 'base64');
-
-  function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
-    const rn = r / 255, gn = g / 255, bn = b / 255;
-    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
-    const l = (max + min) / 2;
-    if (max === min) return [0, 0, Math.round(l * 100)];
-    const d = max - min;
-    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    let hh = 0;
-    if (max === rn) hh = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
-    else if (max === gn) hh = ((bn - rn) / d + 2) / 6;
-    else hh = ((rn - gn) / d + 4) / 6;
-    return [Math.round(hh * 360), Math.round(s * 100), Math.round(l * 100)];
-  }
-
-  function toHex(r: number, g: number, b: number): string {
-    return '#' + [r, g, b].map(v => Math.min(255, Math.round(v / 16) * 16).toString(16).padStart(2, '0')).join('');
-  }
-
-  function isUsableColor(r: number, g: number, b: number, a: number): boolean {
-    if (a < 128) return false;
-    const [, s, l] = rgbToHsl(r, g, b);
-    return s > 20 && l > 15 && l < 85;
-  }
-
-  function buildColorMap(pixels: Array<[number, number, number, number]>): Map<string, number> {
-    const map = new Map<string, number>();
-    for (const [r, g, b, a] of pixels) {
-      if (!isUsableColor(r, g, b, a)) continue;
-      const key = toHex(r, g, b);
-      map.set(key, (map.get(key) ?? 0) + 1);
-    }
-    return map;
-  }
-
-  function topColors(map: Map<string, number>): string[] {
-    return [...map.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 2)
-      .map(e => e[0]);
-  }
-
-  if (isPng) {
-    try {
-      // Validate PNG signature: 8 bytes — 89 50 4E 47 0D 0A 1A 0A
-      if (buf.length < 8 ||
-          buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4E || buf[3] !== 0x47) {
-        throw new Error('Not a valid PNG');
-      }
-
-      // Read PNG IHDR to get width, height, bitDepth, colorType
-      // IHDR chunk starts at byte 8: [length(4)][type(4)][data(13)][crc(4)]
-      const width  = buf.readUInt32BE(16);
-      const height = buf.readUInt32BE(20);
-      const bitDepth  = buf[24];
-      const colorType = buf[25];
-
-      // Only handle 8-bit RGBA (colorType=6) and 8-bit RGB (colorType=2)
-      if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
-        throw new Error(`Unsupported PNG colorType=${colorType} bitDepth=${bitDepth}`);
-      }
-
-      const hasAlpha = colorType === 6;
-      const channels = hasAlpha ? 4 : 3;
-
-      // Collect all IDAT chunks and concatenate their compressed data
-      const idatChunks: Buffer[] = [];
-      let pos = 8;
-      while (pos + 12 <= buf.length) {
-        const chunkLen  = buf.readUInt32BE(pos);
-        const chunkType = buf.slice(pos + 4, pos + 8).toString('ascii');
-        if (chunkType === 'IDAT') {
-          idatChunks.push(buf.slice(pos + 8, pos + 8 + chunkLen));
-        }
-        pos += 12 + chunkLen;
-      }
-
-      if (idatChunks.length === 0) throw new Error('No IDAT chunks found');
-
-      const compressed = Buffer.concat(idatChunks);
-      const raw = zlib.inflateSync(compressed);
-
-      // Each scanline has a filter byte prefix
-      const stride = width * channels;
-      const pixels: Array<[number, number, number, number]> = [];
-
-      for (let y = 0; y < height; y++) {
-        const rowStart = y * (stride + 1);
-        const filterType = raw[rowStart];
-        const row = raw.slice(rowStart + 1, rowStart + 1 + stride);
-
-        // Apply PNG filter reconstruction (simplified — handle Sub and None)
-        const recon = Buffer.alloc(stride);
-        for (let x = 0; x < stride; x++) {
-          const a = x >= channels ? recon[x - channels] : 0;
-          if (filterType === 1) {       // Sub
-            recon[x] = (row[x] + a) & 0xff;
-          } else if (filterType === 0) { // None
-            recon[x] = row[x];
-          } else {
-            // For Up(2), Average(3), Paeth(4): best-effort — just use raw value
-            recon[x] = row[x];
-          }
-        }
-
-        // Sample every 4th pixel
-        for (let x = 0; x < width; x += 4) {
-          const off = x * channels;
-          const r = recon[off];
-          const g = recon[off + 1];
-          const b = recon[off + 2];
-          const a = hasAlpha ? recon[off + 3] : 255;
-          pixels.push([r, g, b, a]);
-        }
-      }
-
-      const map = buildColorMap(pixels);
-      if (map.size === 0) return null;
-      const colors = topColors(map);
-      return colors.length > 0 ? colors : null;
-
-    } catch (err) {
-      console.warn('  Warning: full PNG parse failed, trying byte-scan fallback:', (err as Error).message);
-      // Fall through to simpler approach below
-    }
-  }
-
-  // Simpler fallback: scan raw bytes treating every 4 bytes as RGBA,
-  // skipping the first 64 bytes (header area)
-  try {
-    const pixels: Array<[number, number, number, number]> = [];
-    const start = Math.min(64, buf.length);
-    const step = 16; // sample every 16 bytes
-    for (let i = start; i + 3 < buf.length; i += step) {
-      pixels.push([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
-    }
-    const map = buildColorMap(pixels);
-    if (map.size === 0) return null;
-    const colors = topColors(map);
-    return colors.length > 0 ? colors : null;
-  } catch {
-    return null;
-  }
-}
-
 // ── chunking ──────────────────────────────────────────────────────────────────
-interface ContentChunk { heading: string; content: string }
-
 function splitIntoChunks(text: string, headings: string[]): ContentChunk[] {
   const chunks: ContentChunk[] = [];
   const escapedHeadings = headings
@@ -620,6 +619,30 @@ function splitIntoChunks(text: string, headings: string[]): ContentChunk[] {
   return chunks;
 }
 
+// ── navigation with retry ─────────────────────────────────────────────────────
+async function navigateWithRetry(page: Page, url: string, maxRetries = 3): Promise<boolean> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30_000 });
+      const status = res?.status() ?? 200;
+      if (status === 403 || status === 429) {
+        console.warn(`  ⚠️  Blocked (${status}): ${url}`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      if (attempt === maxRetries) {
+        console.warn(`  ❌ Failed after ${maxRetries} retries: ${(err as Error).message.slice(0, 80)}`);
+        return false;
+      }
+      const delay = attempt * 2_000;
+      console.warn(`\n  ⟳ Retry ${attempt}/${maxRetries} in ${delay / 1000}s…`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  return false;
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 async function scrape() {
   console.log(`\n🕷️  Scraping "${clientId}" → ${startUrl}\n`);
@@ -627,23 +650,32 @@ async function scrape() {
   const origin = new URL(startUrl).origin;
   const visited = new Set<string>();
   const queue: string[] = [normaliseUrl(startUrl, startUrl)!];
-
   let allChunks: ContentChunk[] = [];
   let fullText = '';
   let clientName = clientId;
   let primaryColor = '#2563eb';
   let accentColor  = '#7c3aed';
   let logoUrl: string | null = null;
+  let platform = 'custom';
 
   const browser: Browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'],
-  });
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  }) as unknown as Browser;
 
   try {
-    const page: Page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (compatible; ZempotisBot/1.0)');
-    await page.setViewport({ width: 1280, height: 800 });
+    const page: Page = await browser.newPage() as unknown as Page;
+
+    // Realistic browser fingerprint
+    await page.setUserAgent(CHROME_UA);
+    await page.setExtraHTTPHeaders({
+      'Accept-Language':        'en-GB,en;q=0.9,en-US;q=0.8',
+      'Accept':                 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Encoding':        'gzip, deflate, br',
+      'DNT':                    '1',
+      'Upgrade-Insecure-Requests': '1',
+    });
+    await page.setViewport({ width: 1366, height: 768 });
 
     let pageCount = 0;
     while (queue.length > 0 && pageCount < MAX_PAGES) {
@@ -654,41 +686,81 @@ async function scrape() {
 
       process.stdout.write(`  [${pageCount}/${MAX_PAGES}] ${url} … `);
 
-      try {
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20_000 });
+      const ok = await navigateWithRetry(page, url);
+      if (!ok) { console.log('skipped'); continue; }
 
-        if (pageCount === 1) {
-          clientName = await page.title().then(t => t.split('|')[0].split('-')[0].trim()) || clientId;
+      // ── First page only: platform detection + pre-fetching ────────────────
+      if (pageCount === 1) {
+        platform = await detectPlatform(page);
+        console.log(`\n  📦 Platform: ${platform}`);
 
-          const colours = await detectBrandColours(page);
-          primaryColor = colours.primaryColor;
-          accentColor  = colours.accentColor;
-
-          // Logo extraction (display only — never overrides CSS-detected colours)
-          logoUrl = await extractLogo(page, origin);
-          console.log(`  🖼️  Logo: ${logoUrl ? 'found' : 'not found'}`);
-
-          console.log(`  ✅ primaryColor: ${primaryColor}  accentColor: ${accentColor}`);
-        }
-
-        const { text, headings } = await extractContent(page);
-        fullText += `\n\n=== ${url} ===\n${text}`;
-
-        const chunks = splitIntoChunks(text, headings);
-        allChunks = allChunks.concat(chunks);
-        console.log(`${chunks.length} chunks`);
-
-        const hrefs = await page.evaluate(
-          `Array.from(document.querySelectorAll('a[href]')).map(function(a){ return a.href; })`
-        ) as unknown as string[];
-        for (const href of hrefs) {
-          const norm = normaliseUrl(href, origin);
-          if (norm && norm.startsWith(origin) && !visited.has(norm) && !queue.includes(norm)) {
-            queue.push(norm);
+        // Sitemap — discover all pages without crawling
+        const sitemapUrls = await fetchSitemapUrls(origin);
+        if (sitemapUrls.length > 0) {
+          console.log(`  🗺️  Sitemap: ${sitemapUrls.length} URLs queued`);
+          for (const u of sitemapUrls) {
+            if (!visited.has(u) && !queue.includes(u)) queue.push(u);
           }
         }
-      } catch (err) {
-        console.log(`ERROR: ${(err as Error).message}`);
+
+        // WordPress: REST API gives clean HTML-stripped content
+        if (platform === 'wordpress') {
+          const wpChunks = await fetchWordPressContent(origin);
+          if (wpChunks.length > 0) {
+            allChunks = allChunks.concat(wpChunks);
+            console.log(`  📝 WordPress API: ${wpChunks.length} chunks pre-fetched`);
+          }
+        }
+
+        // Shopify: products and collections via JSON endpoints
+        if (platform === 'shopify') {
+          const shopText = await fetchShopifyContent(origin);
+          if (shopText) { fullText += shopText; console.log('  🛍️  Shopify JSON: content fetched'); }
+        }
+      }
+
+      // ── Platform-specific extra wait for JS rendering ─────────────────────
+      if      (platform === 'wix')         await new Promise(r => setTimeout(r, 3_000));
+      else if (platform === 'squarespace') await new Promise(r => setTimeout(r, 1_500));
+
+      // ── Dismiss cookie banners (first 2 pages only) ───────────────────────
+      if (pageCount <= 2) await dismissCookieBanners(page);
+
+      // ── Scroll to trigger lazy-loaded images / sections ───────────────────
+      await scrollPage(page);
+
+      // ── First page: extract brand config ──────────────────────────────────
+      if (pageCount === 1) {
+        clientName = await page.title().then(t => t.split('|')[0].split('-')[0].trim()) || clientId;
+        const colours = await detectBrandColours(page);
+        primaryColor = colours.primaryColor;
+        accentColor  = colours.accentColor;
+        logoUrl = await extractLogo(page, origin);
+        console.log(`  🖼️  Logo: ${logoUrl ? 'found' : 'not found'}`);
+        console.log(`  ✅ primaryColor: ${primaryColor}  accentColor: ${accentColor}`);
+      }
+
+      // ── Extract and chunk page content ────────────────────────────────────
+      const { text, headings } = await extractContent(page);
+      fullText += `\n\n=== ${url} ===\n${text}`;
+      const chunks = splitIntoChunks(text, headings);
+      allChunks = allChunks.concat(chunks);
+      console.log(`${chunks.length} chunks`);
+
+      // ── Collect internal links ────────────────────────────────────────────
+      const hrefs = await page.evaluate(
+        `Array.from(document.querySelectorAll('a[href]')).map(function(a){ return a.href; })`
+      ) as unknown as string[];
+      for (const href of hrefs) {
+        const norm = normaliseUrl(href, origin);
+        if (norm && norm.startsWith(origin) && !visited.has(norm) && !queue.includes(norm)) {
+          queue.push(norm);
+        }
+      }
+
+      // ── Random delay between page visits (mimics human browsing) ──────────
+      if (queue.length > 0 && pageCount < MAX_PAGES) {
+        await randomDelay(1_000, 3_000);
       }
     }
   } finally {
@@ -740,10 +812,8 @@ async function scrape() {
   console.log(`\n✅ Uploaded ${uploaded} embedding chunks`);
 
   // ── Upsert client config to Supabase ─────────────────────────────────────
-  const greeting    = `Hi! I'm the ${clientName} assistant. How can I help you today?`;
-  const quickReplies = ['What services do you offer?','How do I get started?','What are your opening hours?'];
-
-  // Store only the URL form of logoUrl in Supabase (data URLs can be very large)
+  const greeting     = `Hi! I'm the ${clientName} assistant. How can I help you today?`;
+  const quickReplies = ['What services do you offer?', 'How do I get started?', 'What are your opening hours?'];
   const logoUrlForDb = logoUrl && !logoUrl.startsWith('data:') ? logoUrl : null;
 
   const { error: upsertErr } = await supabase
@@ -797,4 +867,4 @@ async function scrape() {
 `);
 }
 
-scrape().catch(err => { console.error('Fatal:', err); process.exit(1); });
+scrape().catch(err => { console.error('\n💥 Fatal error:', err); process.exit(1); });

@@ -24,6 +24,8 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "puppeteer": "^24.40.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "tailwindcss": "^4",
     "tsx": "^4.19.3",
     "typescript": "^5"
