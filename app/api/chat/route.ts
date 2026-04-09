@@ -10,6 +10,9 @@ import Groq from 'groq-sdk';
 import { getClientConfig } from '@/lib/clientRegistry';
 import { retrieveContext } from '@/lib/rag';
 
+// Allow up to 60s for model download + embedding on cold start
+export const maxDuration = 60;
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
