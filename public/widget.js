@@ -10,7 +10,7 @@
  *  • Brand colours loaded from /api/client/{clientId}
  *  • Greeting + quick reply chips on open
  *  • Lead capture after 2 messages (name + email)
- *  • Chat history persisted in localStorage
+ *  • Chat history persisted in sessionStorage
  *  • Separate minimise / close buttons
  *  • Animated typing indicator
  *  • Mobile-responsive (full-screen on mobile)
@@ -183,13 +183,13 @@
 
   function saveHistory() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.messages.slice(-60)));
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state.messages.slice(-60)));
     } catch (_) {}
   }
 
   function loadHistory() {
     try {
-      var raw = localStorage.getItem(STORAGE_KEY);
+      var raw = sessionStorage.getItem(STORAGE_KEY);
       if (raw) state.messages = JSON.parse(raw);
     } catch (_) {}
   }

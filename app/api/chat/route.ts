@@ -19,10 +19,13 @@ export async function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
 }
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
 export async function POST(request: NextRequest) {
   try {
+    if (!process.env.GROQ_API_KEY) {
+      console.error('[/api/chat] GROQ_API_KEY is not set');
+      return Response.json({ error: 'Server misconfiguration' }, { status: 500, headers: CORS });
+    }
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     const body = await request.json() as {
       clientId: string;
       messages: { role: string; content: string }[];
@@ -71,9 +74,10 @@ ${contextSection}`;
 
     return Response.json({ reply }, { status: 200, headers: CORS });
   } catch (err) {
-    console.error('[/api/chat] Error:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[/api/chat] Error:', message, err);
     return Response.json(
-      { error: 'Internal server error' },
+      { error: 'Internal server error', detail: message },
       { status: 500, headers: CORS }
     );
   }
