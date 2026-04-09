@@ -35,13 +35,15 @@ export async function GET(
 
   // Only expose what the widget needs — never send full scraped content
   return Response.json({
-    clientId:     config.clientId,
-    name:         config.name,
-    url:          config.url,
-    primaryColor: config.primaryColor,
-    accentColor:  config.accentColor,
-    greeting:     config.greeting,
-    quickReplies: config.quickReplies,
-    logoUrl:      config.logoUrl,
+    clientId:       config.clientId,
+    name:           config.name,
+    url:            config.url,
+    primaryColor:   config.primaryColor,
+    accentColor:    config.accentColor,
+    greeting:       config.greeting,
+    quickReplies:   config.quickReplies,
+    logoUrl:        config.logoUrl,
+    launcherLetter: config.launcherLetter,
+    forceLight:     config.forceLight,
   }, { status: 200, headers: CORS });
 }

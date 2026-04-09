@@ -15,6 +15,8 @@ export interface ClientConfig {
   quickReplies: string[];
   content: string;
   logoUrl: string | null;
+  launcherLetter: string | null;
+  forceLight: boolean;
 }
 
 export async function getClientConfig(clientId: string): Promise<ClientConfig | null> {
@@ -22,22 +24,24 @@ export async function getClientConfig(clientId: string): Promise<ClientConfig | 
     const supabase = getSupabase();
     const { data, error } = await supabase
       .from('clients')
-      .select('client_id, name, url, primary_color, accent_color, greeting, quick_replies, content, logo_url')
+      .select('client_id, name, url, primary_color, accent_color, greeting, quick_replies, content, logo_url, launcher_letter, force_light')
       .eq('client_id', clientId)
       .single();
 
     if (error || !data) return null;
 
     return {
-      clientId:     data.client_id,
-      name:         data.name,
-      url:          data.url          ?? '',
-      primaryColor: data.primary_color ?? '#2563eb',
-      accentColor:  data.accent_color  ?? '#7c3aed',
-      greeting:     data.greeting      ?? 'Hi! How can I help you today?',
-      quickReplies: (data.quick_replies as string[]) ?? [],
-      content:      data.content       ?? '',
-      logoUrl:      data.logo_url      ?? null,
+      clientId:       data.client_id,
+      name:           data.name,
+      url:            data.url            ?? '',
+      primaryColor:   data.primary_color  ?? '#2563eb',
+      accentColor:    data.accent_color   ?? '#7c3aed',
+      greeting:       data.greeting       ?? 'Hi! How can I help you today?',
+      quickReplies:   (data.quick_replies as string[]) ?? [],
+      content:        data.content        ?? '',
+      logoUrl:        data.logo_url       ?? null,
+      launcherLetter: data.launcher_letter ?? null,
+      forceLight:     data.force_light    ?? false,
     };
   } catch {
     return null;

@@ -264,17 +264,21 @@
       var pad = size === 'header' ? '4px' : '3px';
       return '<img src="' + escHtml(logoUrl) + '" alt="" style="width:100%;height:100%;object-fit:contain;padding:' + pad + ';border-radius:50%;">';
     }
+    if (config && config.launcherLetter) {
+      var fs = size === 'header' ? '17px' : '14px';
+      return '<span style="font:800 ' + fs + '/1 Inter,system-ui;color:#fff;letter-spacing:-0.02em;">' + escHtml(config.launcherLetter) + '</span>';
+    }
     var cls = size === 'header' ? 'zp-robot-header' : 'zp-robot-msg';
     return '<span class="' + cls + '">' + ICONS.bot + '</span>';
   }
 
   // ── Styles ────────────────────────────────────────────────────────────────
   function injectStyles(primary, accent, dark) {
-    var winBg      = dark ? 'rgba(13,13,22,0.96)'    : 'rgba(255,255,255,0.97)';
+    var winBg      = dark ? 'rgba(13,13,22,0.96)'    : 'rgba(255,255,255,0.98)';
     var winBorder  = dark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.1)';
-    var botBg      = dark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.055)';
-    var botColor   = dark ? 'rgba(255,255,255,0.92)' : '#1a1a1a';
-    var inputBg    = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.05)';
+    var botBg      = dark ? 'rgba(255,255,255,0.09)' : 'rgba(37,99,235,0.06)';
+    var botColor   = dark ? 'rgba(255,255,255,0.92)' : '#0f172a';
+    var inputBg    = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.04)';
     var inputBdr   = dark ? 'rgba(255,255,255,0.11)' : 'rgba(0,0,0,0.14)';
     var inputColor = dark ? '#fff'                    : '#1a1a1a';
     var inputPh    = dark ? 'rgba(255,255,255,0.32)' : 'rgba(0,0,0,0.32)';
@@ -608,6 +612,12 @@
       img.src = cfg.logoUrl;
       img.alt = '';
       icon.appendChild(img);
+    } else if (cfg && cfg.launcherLetter) {
+      // Letter avatar — premium styled
+      var letterSpan = document.createElement('span');
+      letterSpan.style.cssText = 'font:800 26px/1 Inter,system-ui;color:#fff;letter-spacing:-0.02em;';
+      letterSpan.textContent = cfg.launcherLetter;
+      icon.appendChild(letterSpan);
     } else {
       // No logo: robot/AI SVG on primaryColor background (white stroke from CSS)
       icon.innerHTML = ICONS.bot;
@@ -632,9 +642,10 @@
   function setLauncherIcon(iconHtml) {
     var el = document.getElementById('zp-btn-icon');
     if (!el) return;
-    // Only override with chat/close SVG when no logo present
+    // Only override with chat/close SVG when no logo or letter present
     var cfg = state.config;
-    if (cfg && cfg.logoUrl) return; // keep the logo, don't replace with chat icon
+    if (cfg && cfg.logoUrl) return;
+    if (cfg && cfg.launcherLetter) return;
     el.innerHTML = iconHtml;
   }
 
@@ -919,8 +930,12 @@
       img.src = cfg.logoUrl;
       img.alt = '';
       av.appendChild(img);
+    } else if (cfg && cfg.launcherLetter) {
+      var letterSpan = document.createElement('span');
+      letterSpan.style.cssText = 'font:800 14px/1 Inter,system-ui;color:#fff;letter-spacing:-0.02em;';
+      letterSpan.textContent = cfg.launcherLetter;
+      av.appendChild(letterSpan);
     } else {
-      // Robot/AI SVG fallback — never show a letter
       var robot = document.createElement('span');
       robot.className = 'zp-robot-msg';
       robot.innerHTML = ICONS.bot;
@@ -1381,7 +1396,7 @@
     state.config = config;
     var primary = (config && config.primaryColor) ? config.primaryColor : '#2563eb';
     var accent  = (config && config.accentColor)  ? config.accentColor  : '#7c3aed';
-    var dark    = hexLuminance(primary) < 0.5;
+    var dark    = !config.forceLight && hexLuminance(primary) < 0.5;
 
     injectStyles(primary, accent, dark);
     loadHistory();
