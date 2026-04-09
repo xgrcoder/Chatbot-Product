@@ -20,13 +20,16 @@
   'use strict';
 
   // ── Config ────────────────────────────────────────────────────────────────
-  // document.currentScript is null for async scripts and dynamically injected
-  // scripts (e.g. next/script). Fall back to querying by src so data-client
-  // is always found regardless of how the script was loaded.
+  // Priority 1: window global set by inline script (most reliable, works with
+  //             next/script, async, and any dynamic injection method)
+  // Priority 2: data-client attribute on the script tag
+  // Priority 3: data-client on any widget.js script tag in the document
   var SCRIPT_TAG = document.currentScript ||
     document.querySelector('script[src*="widget.js"][data-client]') ||
     document.querySelector('script[src*="widget.js"]');
-  var CLIENT_ID = SCRIPT_TAG ? SCRIPT_TAG.getAttribute('data-client') : null;
+  var CLIENT_ID = (typeof window !== 'undefined' && window.ZEMPOTIS_CLIENT_ID)
+    || (SCRIPT_TAG && SCRIPT_TAG.getAttribute('data-client'))
+    || null;
   var API_BASE = 'https://zempotis-chat-fy989x4cu-abdul-aziz-uddins-projects.vercel.app';
 
   if (!CLIENT_ID) {
