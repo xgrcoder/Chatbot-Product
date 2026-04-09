@@ -8,10 +8,6 @@
 import { NextRequest } from 'next/server';
 import Groq from 'groq-sdk';
 import { getClientConfig } from '@/lib/clientRegistry';
-import { retrieveContext } from '@/lib/rag';
-
-// Allow up to 60s for model download + embedding on cold start
-export const maxDuration = 60;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -49,14 +45,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const latestUser = [...messages].reverse().find(m => m.role === 'user');
-    const userQuery = latestUser?.content ?? '';
-
-    const { context, ragUsed } = await retrieveContext(clientId, userQuery, 5);
-
-    const contextSection = ragUsed
-      ? `\n\nRelevant information from ${client.name}'s website:\n${context}`
-      : `\n\nWebsite content for reference:\n${client.content.slice(0, 8000)}`;
+    const contextSection = `\n\nWebsite content for reference:\n${client.content.slice(0, 8000)}`;
 
     const systemPrompt = `You are a helpful, friendly AI assistant for ${client.name}.
 Answer questions from website visitors accurately and concisely.
@@ -80,7 +69,7 @@ ${contextSection}`;
 
     const reply = completion.choices[0]?.message?.content ?? 'Sorry, I could not generate a response.';
 
-    return Response.json({ reply, ragUsed }, { status: 200, headers: CORS });
+    return Response.json({ reply }, { status: 200, headers: CORS });
   } catch (err) {
     console.error('[/api/chat] Error:', err);
     return Response.json(
