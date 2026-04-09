@@ -1,0 +1,2 @@
+# Exclude scripts — these run locally only, not needed in the Vercel build
+scripts/
