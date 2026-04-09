@@ -2,12 +2,12 @@
  * POST /api/chat
  *
  * Accepts: { clientId: string, messages: { role: string, content: string }[] }
- * Returns: { reply: string, ragUsed: boolean }
+ * Returns: { reply: string }
  */
 
 import { NextRequest } from 'next/server';
 import Groq from 'groq-sdk';
-import { getClientConfig } from '@/lib/clientRegistry';
+import { getClientConfig } from '@/lib/getClient';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
       console.error('[/api/chat] GROQ_API_KEY is not set');
       return Response.json({ error: 'Server misconfiguration' }, { status: 500, headers: CORS });
     }
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
     const body = await request.json() as {
       clientId: string;
       messages: { role: string; content: string }[];
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const client = getClientConfig(clientId);
+    const client = await getClientConfig(clientId);
     if (!client) {
       return Response.json(
         { error: `Client "${clientId}" not found` },
@@ -57,6 +57,7 @@ If you don't know something, say so honestly and suggest they contact the team d
 Never make up information not in the provided context.
 ${contextSection}`;
 
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     const completion = await groq.chat.completions.create({
       model: 'llama-3.1-8b-instant',
       messages: [
@@ -71,11 +72,11 @@ ${contextSection}`;
     });
 
     const reply = completion.choices[0]?.message?.content ?? 'Sorry, I could not generate a response.';
-
     return Response.json({ reply }, { status: 200, headers: CORS });
+
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error('[/api/chat] Error:', message, err);
+    console.error('[/api/chat] Error:', message);
     return Response.json(
       { error: 'Internal server error', detail: message },
       { status: 500, headers: CORS }

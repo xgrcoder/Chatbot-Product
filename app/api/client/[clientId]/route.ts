@@ -2,11 +2,12 @@
  * GET /api/client/[clientId]
  *
  * Returns public-safe client config for the widget.
+ * Reads from Supabase `clients` table — no local files needed.
  * Note: params is a Promise in Next.js 16 — must be awaited.
  */
 
 import { NextRequest } from 'next/server';
-import { getClientConfig } from '@/lib/clientRegistry';
+import { getClientConfig } from '@/lib/getClient';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -23,8 +24,8 @@ export async function GET(
   { params }: { params: Promise<{ clientId: string }> }
 ) {
   const { clientId } = await params;
+  const config = await getClientConfig(clientId);
 
-  const config = getClientConfig(clientId);
   if (!config) {
     return Response.json(
       { error: `Client "${clientId}" not found` },
@@ -34,11 +35,11 @@ export async function GET(
 
   // Only expose what the widget needs — never send full scraped content
   return Response.json({
-    clientId: config.clientId,
-    name: config.name,
+    clientId:     config.clientId,
+    name:         config.name,
     primaryColor: config.primaryColor,
-    accentColor: config.accentColor,
-    greeting: config.greeting,
+    accentColor:  config.accentColor,
+    greeting:     config.greeting,
     quickReplies: config.quickReplies,
   }, { status: 200, headers: CORS });
 }
