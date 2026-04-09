@@ -14,6 +14,7 @@ export interface ClientConfig {
   greeting: string;
   quickReplies: string[];
   content: string;
+  logoUrl: string | null;
 }
 
 export async function getClientConfig(clientId: string): Promise<ClientConfig | null> {
@@ -21,7 +22,7 @@ export async function getClientConfig(clientId: string): Promise<ClientConfig | 
     const supabase = getSupabase();
     const { data, error } = await supabase
       .from('clients')
-      .select('client_id, name, url, primary_color, accent_color, greeting, quick_replies, content')
+      .select('client_id, name, url, primary_color, accent_color, greeting, quick_replies, content, logo_url')
       .eq('client_id', clientId)
       .single();
 
@@ -36,6 +37,7 @@ export async function getClientConfig(clientId: string): Promise<ClientConfig | 
       greeting:     data.greeting      ?? 'Hi! How can I help you today?',
       quickReplies: (data.quick_replies as string[]) ?? [],
       content:      data.content       ?? '',
+      logoUrl:      data.logo_url      ?? null,
     };
   } catch {
     return null;

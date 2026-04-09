@@ -37,9 +37,11 @@ export async function GET(
   return Response.json({
     clientId:     config.clientId,
     name:         config.name,
+    url:          config.url,
     primaryColor: config.primaryColor,
     accentColor:  config.accentColor,
     greeting:     config.greeting,
     quickReplies: config.quickReplies,
+    logoUrl:      config.logoUrl,
   }, { status: 200, headers: CORS });
 }

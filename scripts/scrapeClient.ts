@@ -3,7 +3,7 @@ import { resolve } from 'path';
 config({ path: resolve(process.cwd(), '.env.local') });
 
 /**
- * Zempotis Chat — Premium Client Scraper v2.0
+ * Zempotis Chat — Premium Client Scraper v3.0
  *
  * Usage:
  *   npx tsx scripts/scrapeClient.ts <clientId> <url>
@@ -13,17 +13,14 @@ config({ path: resolve(process.cwd(), '.env.local') });
  *
  * What it does:
  *   1. Crawls up to 30 pages with Puppeteer (same-origin only)
- *   2. Extracts headings + body text
- *   3. Advanced colour detection:
- *      - meta theme-color tag
- *      - CSS custom properties from :root
- *      - Computed styles from buttons, CTAs, nav, hero, headings, links
- *      - Frequency-ranked with near-white/near-black/grey filtering
- *   4. Splits content into chunks and generates 384-dim embeddings
- *   5. Uploads chunks to Supabase client_embeddings table
- *   6. Upserts client config to Supabase clients table
- *   7. Saves a local JSON backup to public/clients/{clientId}.json
- *   8. Prints the embed code snippet
+ *   2. Deep content extraction: expands accordions, JSON-LD, meta tags, tables, price elements
+ *   3. Advanced colour detection (CSS) + logo-derived colour extraction
+ *   4. Logo extraction: downloads logo and converts to base64 data URL
+ *   5. Splits content into chunks and generates 384-dim embeddings
+ *   6. Uploads chunks to Supabase client_embeddings table
+ *   7. Upserts client config to Supabase clients table (includes logo_url)
+ *   8. Saves a local JSON backup to public/clients/{clientId}.json
+ *   9. Prints the embed code snippet
  */
 
 import puppeteer, { Browser, Page } from 'puppeteer';
@@ -31,6 +28,9 @@ import { createClient } from '@supabase/supabase-js';
 import { pipeline } from '@xenova/transformers';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as https from 'https';
+import * as http from 'http';
+import * as zlib from 'zlib';
 
 // ── env ─────────────────────────────────────────────────────────────────────
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
@@ -88,20 +88,86 @@ function normaliseUrl(href: string, base: string): string | null {
 
 // ── content extraction ────────────────────────────────────────────────────────
 async function extractContent(page: Page): Promise<{ text: string; headings: string[] }> {
-  // Use string form of evaluate — tsx/esbuild never transforms string content,
+  // Click all accordion/expand buttons, then wait for content to expand.
+  // Uses string IIFE form — tsx/esbuild never transforms string content,
   // so no __name helpers are injected into the browser context.
-  return page.evaluate(`(function() {
+  try {
+    await page.evaluate(`(function(){
+    document.querySelectorAll(
+      '[aria-expanded="false"], .accordion-toggle, .faq-toggle, details summary, [data-toggle], [data-bs-toggle]'
+    ).forEach(function(el) { el.click(); });
+  })()`);
+  } catch { /* accordion clicks are best-effort */ }
+
+  await new Promise(r => setTimeout(r, 500));
+
+  const iife = `(function() {
     ['script','style','noscript','iframe','nav','footer','header',
      '.cookie-banner','#cookie-banner','[aria-hidden="true"]'].forEach(function(sel) {
       document.querySelectorAll(sel).forEach(function(el) { el.remove(); });
     });
+
     var headings = [];
     document.querySelectorAll('h1,h2,h3,h4').forEach(function(h) {
       var t = h.innerText && h.innerText.trim();
       if (t) headings.push(t);
     });
-    return { text: document.body.innerText || '', headings: headings };
-  })()`);
+
+    var parts = [];
+
+    // Base body text
+    parts.push(document.body.innerText || '');
+
+    // JSON-LD schema text values
+    var extractStrings = function(v) {
+      if (typeof v === 'string' && v.length > 2) return v;
+      if (Array.isArray(v)) return v.map(extractStrings).filter(Boolean).join(' ');
+      if (v && typeof v === 'object') return Object.values(v).map(extractStrings).filter(Boolean).join(' ');
+      return '';
+    };
+    document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s) {
+      try {
+        var obj = JSON.parse(s.textContent || '');
+        var txt = extractStrings(obj);
+        if (txt) parts.push(txt);
+      } catch(e) {}
+    });
+
+    // Meta description
+    var metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc) {
+      var mc = metaDesc.getAttribute('content');
+      if (mc) parts.push(mc);
+    }
+
+    // OG description
+    var ogDesc = document.querySelector('meta[property="og:description"]');
+    if (ogDesc) {
+      var oc = ogDesc.getAttribute('content');
+      if (oc) parts.push(oc);
+    }
+
+    // Table text
+    document.querySelectorAll('table').forEach(function(tbl) {
+      var tt = tbl.innerText && tbl.innerText.trim();
+      if (tt) parts.push(tt);
+    });
+
+    // Price context: elements whose innerText contains currency symbols
+    var priceTexts = [];
+    document.querySelectorAll('*').forEach(function(el) {
+      var t = el.innerText;
+      if (t && /[\u00A3$\u20AC]/.test(t) && el.children.length < 3) {
+        var trimmed = t.trim().slice(0, 200);
+        if (trimmed) priceTexts.push(trimmed);
+      }
+    });
+    if (priceTexts.length) parts.push(priceTexts.join('\\n'));
+
+    return { text: parts.join('\\n\\n'), headings: headings };
+  })()`;
+
+  return page.evaluate(iife) as unknown as Promise<{ text: string; headings: string[] }>;
 }
 
 // ── colour detection ──────────────────────────────────────────────────────────
@@ -223,6 +289,267 @@ async function detectBrandColours(page: Page): Promise<{ primaryColor: string; a
   return { primaryColor, accentColor };
 }
 
+// ── logo extraction ───────────────────────────────────────────────────────────
+
+/**
+ * Download a URL and return { buffer, contentType }.
+ * Follows redirects. Works with both http and https.
+ */
+function downloadUrl(urlStr: string): Promise<{ buffer: Buffer; contentType: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    mod.get(urlStr, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ZempotisBot/1.0)' } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        // Follow redirect
+        downloadUrl(res.headers.location).then(resolve).catch(reject);
+        return;
+      }
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        reject(new Error(`HTTP ${res.statusCode} for ${urlStr}`));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolve({
+        buffer: Buffer.concat(chunks),
+        contentType: (res.headers['content-type'] || 'image/png').split(';')[0].trim(),
+      }));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+/**
+ * Find and download the site logo. Returns a base64 data URL, a plain URL
+ * as fallback, or null if nothing is found.
+ */
+async function extractLogo(page: Page, origin: string): Promise<string | null> {
+  // Find the logo URL in the page using prioritised heuristics.
+  // Uses IIFE string form — no TypeScript, no const/let, plain var.
+  const rawUrl: string | null = await page.evaluate(`(function() {
+    // 1. header/nav img whose src contains "logo"
+    var navImgs = document.querySelectorAll('header img, nav img, .header img, .navbar img');
+    for (var i = 0; i < navImgs.length; i++) {
+      var src = navImgs[i].src || '';
+      if (src && /logo/i.test(src)) return src;
+    }
+
+    // 2. Any img whose alt contains "logo"
+    var allImgs = document.querySelectorAll('img');
+    for (var j = 0; j < allImgs.length; j++) {
+      var alt = allImgs[j].alt || '';
+      if (/logo/i.test(alt) && allImgs[j].src) return allImgs[j].src;
+    }
+
+    // 3. First img inside header or nav (regardless of name)
+    var firstHeaderImg = document.querySelector('header img, nav img, .header img, .navbar img');
+    if (firstHeaderImg && firstHeaderImg.src) return firstHeaderImg.src;
+
+    // 4. apple-touch-icon
+    var touch = document.querySelector('link[rel="apple-touch-icon"]');
+    if (touch && touch.href) return touch.href;
+
+    // 5. favicon with image type
+    var favicon = document.querySelector('link[rel="icon"][type*="image"], link[rel="shortcut icon"]');
+    if (favicon && favicon.href) return favicon.href;
+
+    // 6. og:image
+    var og = document.querySelector('meta[property="og:image"]');
+    if (og && og.content) return og.content;
+
+    return null;
+  })()`);
+
+  if (!rawUrl) return null;
+
+  // Resolve relative URLs against origin
+  let absoluteUrl: string;
+  try {
+    absoluteUrl = new URL(rawUrl, origin).href;
+  } catch {
+    return rawUrl;
+  }
+
+  // Download and convert to base64 data URL
+  try {
+    const { buffer, contentType } = await downloadUrl(absoluteUrl);
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
+  } catch (err) {
+    console.warn('  Warning: could not download logo, using URL as fallback:', (err as Error).message);
+    return absoluteUrl;
+  }
+}
+
+// ── logo colour extraction ────────────────────────────────────────────────────
+
+/**
+ * Parse a PNG buffer and extract dominant brand colours.
+ *
+ * Strategy:
+ *   - Find IDAT chunks, inflate them, interpret as RGBA scanlines
+ *   - Sample every 4th pixel
+ *   - Build colour frequency map
+ *   - Filter near-white (L>85%), near-black (L<15%), transparent (alpha<128), grey (S<20%)
+ *   - Return top 2 hex colours
+ *
+ * Falls back to a simpler byte-scan approach if full PNG parsing fails.
+ */
+function extractLogoColors(logoDataUrl: string): string[] | null {
+  if (!logoDataUrl.startsWith('data:')) return null;
+
+  const isPng = logoDataUrl.startsWith('data:image/png');
+
+  // Decode base64 payload
+  const commaIdx = logoDataUrl.indexOf(',');
+  if (commaIdx === -1) return null;
+  const b64 = logoDataUrl.slice(commaIdx + 1);
+  const buf = Buffer.from(b64, 'base64');
+
+  function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+    const rn = r / 255, gn = g / 255, bn = b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const l = (max + min) / 2;
+    if (max === min) return [0, 0, Math.round(l * 100)];
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let hh = 0;
+    if (max === rn) hh = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
+    else if (max === gn) hh = ((bn - rn) / d + 2) / 6;
+    else hh = ((rn - gn) / d + 4) / 6;
+    return [Math.round(hh * 360), Math.round(s * 100), Math.round(l * 100)];
+  }
+
+  function toHex(r: number, g: number, b: number): string {
+    return '#' + [r, g, b].map(v => Math.min(255, Math.round(v / 16) * 16).toString(16).padStart(2, '0')).join('');
+  }
+
+  function isUsableColor(r: number, g: number, b: number, a: number): boolean {
+    if (a < 128) return false;
+    const [, s, l] = rgbToHsl(r, g, b);
+    return s > 20 && l > 15 && l < 85;
+  }
+
+  function buildColorMap(pixels: Array<[number, number, number, number]>): Map<string, number> {
+    const map = new Map<string, number>();
+    for (const [r, g, b, a] of pixels) {
+      if (!isUsableColor(r, g, b, a)) continue;
+      const key = toHex(r, g, b);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return map;
+  }
+
+  function topColors(map: Map<string, number>): string[] {
+    return [...map.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(e => e[0]);
+  }
+
+  if (isPng) {
+    try {
+      // Validate PNG signature: 8 bytes — 89 50 4E 47 0D 0A 1A 0A
+      if (buf.length < 8 ||
+          buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4E || buf[3] !== 0x47) {
+        throw new Error('Not a valid PNG');
+      }
+
+      // Read PNG IHDR to get width, height, bitDepth, colorType
+      // IHDR chunk starts at byte 8: [length(4)][type(4)][data(13)][crc(4)]
+      const width  = buf.readUInt32BE(16);
+      const height = buf.readUInt32BE(20);
+      const bitDepth  = buf[24];
+      const colorType = buf[25];
+
+      // Only handle 8-bit RGBA (colorType=6) and 8-bit RGB (colorType=2)
+      if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
+        throw new Error(`Unsupported PNG colorType=${colorType} bitDepth=${bitDepth}`);
+      }
+
+      const hasAlpha = colorType === 6;
+      const channels = hasAlpha ? 4 : 3;
+
+      // Collect all IDAT chunks and concatenate their compressed data
+      const idatChunks: Buffer[] = [];
+      let pos = 8;
+      while (pos + 12 <= buf.length) {
+        const chunkLen  = buf.readUInt32BE(pos);
+        const chunkType = buf.slice(pos + 4, pos + 8).toString('ascii');
+        if (chunkType === 'IDAT') {
+          idatChunks.push(buf.slice(pos + 8, pos + 8 + chunkLen));
+        }
+        pos += 12 + chunkLen;
+      }
+
+      if (idatChunks.length === 0) throw new Error('No IDAT chunks found');
+
+      const compressed = Buffer.concat(idatChunks);
+      const raw = zlib.inflateSync(compressed);
+
+      // Each scanline has a filter byte prefix
+      const stride = width * channels;
+      const pixels: Array<[number, number, number, number]> = [];
+
+      for (let y = 0; y < height; y++) {
+        const rowStart = y * (stride + 1);
+        const filterType = raw[rowStart];
+        const row = raw.slice(rowStart + 1, rowStart + 1 + stride);
+
+        // Apply PNG filter reconstruction (simplified — handle Sub and None)
+        const recon = Buffer.alloc(stride);
+        for (let x = 0; x < stride; x++) {
+          const a = x >= channels ? recon[x - channels] : 0;
+          if (filterType === 1) {       // Sub
+            recon[x] = (row[x] + a) & 0xff;
+          } else if (filterType === 0) { // None
+            recon[x] = row[x];
+          } else {
+            // For Up(2), Average(3), Paeth(4): best-effort — just use raw value
+            recon[x] = row[x];
+          }
+        }
+
+        // Sample every 4th pixel
+        for (let x = 0; x < width; x += 4) {
+          const off = x * channels;
+          const r = recon[off];
+          const g = recon[off + 1];
+          const b = recon[off + 2];
+          const a = hasAlpha ? recon[off + 3] : 255;
+          pixels.push([r, g, b, a]);
+        }
+      }
+
+      const map = buildColorMap(pixels);
+      if (map.size === 0) return null;
+      const colors = topColors(map);
+      return colors.length > 0 ? colors : null;
+
+    } catch (err) {
+      console.warn('  Warning: full PNG parse failed, trying byte-scan fallback:', (err as Error).message);
+      // Fall through to simpler approach below
+    }
+  }
+
+  // Simpler fallback: scan raw bytes treating every 4 bytes as RGBA,
+  // skipping the first 64 bytes (header area)
+  try {
+    const pixels: Array<[number, number, number, number]> = [];
+    const start = Math.min(64, buf.length);
+    const step = 16; // sample every 16 bytes
+    for (let i = start; i + 3 < buf.length; i += step) {
+      pixels.push([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
+    }
+    const map = buildColorMap(pixels);
+    if (map.size === 0) return null;
+    const colors = topColors(map);
+    return colors.length > 0 ? colors : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── chunking ──────────────────────────────────────────────────────────────────
 interface ContentChunk { heading: string; content: string }
 
@@ -279,6 +606,7 @@ async function scrape() {
   let clientName = clientId;
   let primaryColor = '#2563eb';
   let accentColor  = '#7c3aed';
+  let logoUrl: string | null = null;
 
   const browser: Browser = await puppeteer.launch({
     headless: true,
@@ -304,9 +632,25 @@ async function scrape() {
 
         if (pageCount === 1) {
           clientName = await page.title().then(t => t.split('|')[0].split('-')[0].trim()) || clientId;
+
           const colours = await detectBrandColours(page);
           primaryColor = colours.primaryColor;
           accentColor  = colours.accentColor;
+
+          // Logo extraction
+          logoUrl = await extractLogo(page, origin);
+          console.log(`  🖼️  Logo: ${logoUrl ? 'found' : 'not found'}`);
+
+          // Logo-derived colour extraction (60% weight — prefer logo over CSS)
+          if (logoUrl && logoUrl.startsWith('data:')) {
+            const logoColors = extractLogoColors(logoUrl);
+            if (logoColors && logoColors.length > 0) {
+              primaryColor = logoColors[0] ?? primaryColor;
+              if (logoColors[1]) accentColor = logoColors[1];
+              console.log(`  🎨 Logo colours applied: primary=${primaryColor} accent=${accentColor}`);
+            }
+          }
+
           console.log(`  ✅ primaryColor: ${primaryColor}  accentColor: ${accentColor}`);
         }
 
@@ -317,9 +661,9 @@ async function scrape() {
         allChunks = allChunks.concat(chunks);
         console.log(`${chunks.length} chunks`);
 
-        const hrefs: string[] = await page.evaluate(
+        const hrefs = await page.evaluate(
           `Array.from(document.querySelectorAll('a[href]')).map(function(a){ return a.href; })`
-        );
+        ) as unknown as string[];
         for (const href of hrefs) {
           const norm = normaliseUrl(href, origin);
           if (norm && norm.startsWith(origin) && !visited.has(norm) && !queue.includes(norm)) {
@@ -382,6 +726,9 @@ async function scrape() {
   const greeting    = `Hi! I'm the ${clientName} assistant. How can I help you today?`;
   const quickReplies = ['What services do you offer?','How do I get started?','What are your opening hours?'];
 
+  // Store only the URL form of logoUrl in Supabase (data URLs can be very large)
+  const logoUrlForDb = logoUrl && !logoUrl.startsWith('data:') ? logoUrl : null;
+
   const { error: upsertErr } = await supabase
     .from('clients')
     .upsert({
@@ -390,6 +737,7 @@ async function scrape() {
       url:           startUrl,
       primary_color: primaryColor,
       accent_color:  accentColor,
+      logo_url:      logoUrlForDb,
       greeting,
       quick_replies: quickReplies,
       content:       fullText.slice(0, 100_000),
@@ -409,7 +757,9 @@ async function scrape() {
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(outPath, JSON.stringify({
     clientId, name: clientName, url: startUrl,
-    primaryColor, accentColor, greeting, quickReplies,
+    primaryColor, accentColor,
+    logoUrl: logoUrlForDb,
+    greeting, quickReplies,
     content: fullText.slice(0, 100_000),
     scrapedAt: new Date().toISOString(),
     chunkCount: uploaded,
@@ -425,6 +775,7 @@ async function scrape() {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   primaryColor : ${primaryColor}
   accentColor  : ${accentColor}
+  logoUrl      : ${logoUrlForDb ?? '(embedded as base64)'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 }

@@ -1,15 +1,24 @@
 /**
- * Zempotis Chat — Premium Embeddable Widget v3.0
+ * Zempotis Chat — Premium Embeddable Widget v4.0
  *
  *   <script src="https://chatbot-product-flax.vercel.app/widget.js" data-client="clientId" async></script>
  *
- * v3.0 features:
+ * v4.0 features:
+ *  • Logo in launcher button (logoUrl from API) with fallback letter
+ *  • 64px header with logo/letter avatar + left/right layout
+ *  • Zero-gap window layout with overflow:hidden border-radius clipping
+ *  • Dark semi-transparent overlay on mobile
+ *  • Message rows with per-message bot avatar (logo or letter)
+ *  • User bubbles: 18px 18px 4px 18px radius; bot: 18px 18px 18px 4px
+ *  • 56px input area, footer bar with lead link + Powered by
+ *  • Quick reply chips: 1.5px border, hover fill
+ *  • Follow-up suggestion chips: lighter, inline, with → prefix
+ *  • Hidden scrollbar on message list
  *  • Full-screen mobile (< 768px) with visualViewport keyboard adjustment
  *  • Flashing green dot on button + header (CSS heartbeat pulse)
  *  • Bot display name derived from config.name or config.url
  *  • Time-based greeting (morning / afternoon / evening)
  *  • Idle nudge after 30 s of inactivity (once per session)
- *  • Follow-up suggestion chips after every AI response
  *  • Frustration detection → immediate empathy reply
  *  • Thumbs up/down + copy on every AI bubble
  *  • Book Now button after booking-related exchanges
@@ -99,7 +108,6 @@
    */
   function getDisplayName(config) {
     if (config && config.name) {
-      // Split on em-dash, en-dash, or hyphen-space
       var parts = config.name.split(/\s*[—–-]\s*/);
       var words = parts[0].trim().split(/\s+/);
       return words.slice(0, 2).join(' ');
@@ -108,7 +116,6 @@
       try {
         var host = new URL(config.url).hostname;
         host = host.replace(/^www\./, '');
-        // Strip TLD (.com, .co.uk, etc.)
         host = host.replace(/\.[a-z]{2,}(\.[a-z]{2})?$/, '');
         return host.charAt(0).toUpperCase() + host.slice(1);
       } catch (_) {}
@@ -193,7 +200,8 @@
   function playNotificationTone() {
     if (!state.soundEnabled) return;
     try {
-      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var AudioCtx = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
+      var ctx = new AudioCtx();
       var osc = ctx.createOscillator();
       var gain = ctx.createGain();
       osc.connect(gain);
@@ -243,6 +251,23 @@
     setTimeout(function () { if (toast.parentNode) toast.remove(); }, 2000);
   }
 
+  // ── Avatar HTML helpers ───────────────────────────────────────────────────
+
+  /**
+   * Build the inner HTML for a small avatar circle.
+   * size: 'header' (36px) | 'msg' (28px)
+   */
+  function buildAvatarInnerHtml(config, size) {
+    var logoUrl = config && config.logoUrl;
+    if (logoUrl) {
+      var pad = size === 'header' ? '4px' : '3px';
+      return '<img src="' + escHtml(logoUrl) + '" alt="" style="width:100%;height:100%;object-fit:contain;padding:' + pad + ';border-radius:50%;">';
+    }
+    var letter = getDisplayName(config).charAt(0).toUpperCase();
+    var fs = size === 'header' ? '16px' : '12px';
+    return '<span class="zp-avatar-letter" style="font:700 ' + fs + '/1 Inter,system-ui;color:#fff;">' + escHtml(letter) + '</span>';
+  }
+
   // ── Styles ────────────────────────────────────────────────────────────────
   function injectStyles(primary, accent, dark) {
     var winBg      = dark ? 'rgba(13,13,22,0.96)'    : 'rgba(255,255,255,0.97)';
@@ -255,54 +280,55 @@
     var inputPh    = dark ? 'rgba(255,255,255,0.32)' : 'rgba(0,0,0,0.32)';
     var divider    = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
     var timeColor  = dark ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.32)';
-    var scrollbar  = dark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.13)';
     var footerC    = dark ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.38)';
     var footerA    = dark ? 'rgba(255,255,255,0.42)' : 'rgba(0,0,0,0.52)';
-    var ctrlColor  = dark ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.75)';
-    var ctrlHover  = dark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.22)';
+    var ctrlColor  = 'rgba(255,255,255,0.75)';
+    var ctrlHover  = 'rgba(255,255,255,0.22)';
     var dotColor   = dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.25)';
     var confirmC   = dark ? '#4ade80'                 : '#16a34a';
     var actionC    = dark ? 'rgba(255,255,255,0.38)' : 'rgba(0,0,0,0.32)';
     var actionHov  = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
     var scrollPill = dark ? 'rgba(30,30,50,0.92)'    : 'rgba(255,255,255,0.95)';
     var scrollPillC= dark ? 'rgba(255,255,255,0.7)'  : 'rgba(0,0,0,0.6)';
+    var sugBorder  = dark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.18)';
+    var sugColor   = dark ? 'rgba(255,255,255,0.5)'  : 'rgba(0,0,0,0.45)';
+    var avatarMsgBg= dark ? 'rgba(255,255,255,0.12)' : 'rgba(' + hexToRgb(primary) + ',0.12)';
 
     var css = [
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');",
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');",
       ':root{--zp-primary:'+primary+';--zp-accent:'+accent+'}',
 
       // ── Keyframes ──
-      // Badge pulse
       '@keyframes zp-badge-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.25)}}',
-      // Window slide-up (spring)
       '@keyframes zp-slide-up{from{opacity:0;transform:translateY(28px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}',
-      // Message fade-in + lift
       '@keyframes zp-msg-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}',
-      // Typing dots
       '@keyframes zp-dot{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}',
-      // Button bounce-in from below on load
       '@keyframes zp-btn-enter{0%{opacity:0;transform:translateY(60px) scale(.7)}60%{transform:translateY(-8px) scale(1.06)}100%{opacity:1;transform:translateY(0) scale(1)}}',
-      // Button breathing (when closed)
       '@keyframes zp-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}',
-      // General fade-in
       '@keyframes zp-fade-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}',
-      // Flashing green dot heartbeat
       '@keyframes zp-heartbeat{0%,100%{opacity:1}50%{opacity:.25}}',
-      // Header shimmer sweep
       '@keyframes zp-shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}',
-      // Checkmark draw
       '@keyframes zp-check-draw{from{stroke-dashoffset:50}to{stroke-dashoffset:0}}',
 
+      // ── Overlay (mobile backdrop) ──
+      '#zp-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2147483638}',
+      '#zp-overlay.zp-visible{display:block}',
+
       // ── Launcher button ──
+      // Default state (no logo): primaryColor background
       '#zp-btn{position:fixed;bottom:24px;right:24px;width:60px;height:60px;border-radius:50%;',
-      'background:var(--zp-primary);border:none;cursor:pointer;z-index:2147483640;',
+      'background:'+primary+';border:none;cursor:pointer;z-index:2147483640;',
       'display:flex;align-items:center;justify-content:center;',
       'box-shadow:0 4px 28px '+primary+'70;',
-      'opacity:0;',  // starts hidden — zp-btn-enter animates it in
+      'opacity:0;',
       'animation:zp-btn-enter .55s cubic-bezier(.34,1.56,.64,1) 1.5s forwards, zp-breathe 3s ease-in-out 2.1s infinite;',
       'transition:box-shadow .2s}',
-      '#zp-btn.zp-open{animation:none;transform:scale(1)}',  // stop breathing when open
+      '#zp-btn.zp-open{animation:none;transform:scale(1)}',
       '#zp-btn:hover{box-shadow:0 6px 32px '+primary+'90}',
+      // Logo variant: white circle background
+      '#zp-btn.zp-has-logo{background:#fff}',
+      '#zp-btn .zp-btn-logo{width:44px;height:44px;border-radius:50%;object-fit:contain;padding:6px;background:#fff}',
+      '#zp-btn .zp-btn-letter{font:700 24px/1 Inter,system-ui;color:#fff}',
       '#zp-btn-icon{display:flex;align-items:center;justify-content:center;pointer-events:none}',
       '#zp-btn-icon svg{width:28px;height:28px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
 
@@ -318,8 +344,8 @@
       'box-shadow:0 0 0 2px #fff}',
       '#zp-badge.zp-pulse{animation:zp-badge-pulse 1.2s ease-in-out infinite}',
 
-      // ── Chat window ──
-      '#zp-win{position:fixed;bottom:96px;right:24px;width:380px;max-height:600px;',
+      // ── Chat window — zero gaps, overflow:hidden clips header ──
+      '#zp-win{position:fixed;bottom:96px;right:24px;width:380px;max-height:620px;',
       'background:'+winBg+';backdrop-filter:blur(32px) saturate(1.4);',
       '-webkit-backdrop-filter:blur(32px) saturate(1.4);',
       'border:1px solid '+winBorder+';border-radius:20px;',
@@ -329,38 +355,38 @@
       'animation:zp-slide-up .35s cubic-bezier(.34,1.56,.64,1) forwards;',
       'font-family:Inter,system-ui,sans-serif}',
 
-      // ── Header — gradient + shimmer ──
-      '#zp-header{display:flex;align-items:center;gap:10px;padding:14px 16px;flex-shrink:0;',
-      'background:linear-gradient(135deg,'+primary+' 0%,'+accent+' 100%);',
-      'position:relative;overflow:hidden}',
-      // Shimmer pseudo-element (handled via a real element for vanilla JS compat)
+      // ── Header — 64px tall, gradient, shimmer ──
+      '#zp-header{min-height:64px;padding:12px 16px;display:flex;align-items:center;',
+      'justify-content:space-between;flex-shrink:0;position:relative;overflow:hidden;',
+      'background:linear-gradient(135deg,'+primary+' 0%,'+accent+' 100%)}',
       '#zp-header-shimmer{position:absolute;top:0;left:0;width:40%;height:100%;',
       'background:linear-gradient(90deg,transparent,rgba(255,255,255,.18),transparent);',
       'animation:zp-shimmer 3.5s ease-in-out infinite;pointer-events:none}',
-      '#zp-avatar{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.18);',
-      'display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;z-index:1}',
-      '#zp-avatar svg{width:20px;height:20px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
-      '#zp-title-wrap{flex:1;min-width:0;position:relative;z-index:1}',
+      '#zp-header-left{display:flex;align-items:center;gap:10px;position:relative;z-index:1;min-width:0;flex:1}',
+      '#zp-header-right{display:flex;align-items:center;gap:2px;position:relative;z-index:1;flex-shrink:0}',
+      '#zp-avatar{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);',
+      'display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden}',
+      '#zp-avatar img{width:100%;height:100%;object-fit:contain;padding:4px}',
+      '.zp-avatar-letter{font:700 16px/1 Inter,system-ui;color:#fff}',
+      '#zp-title-wrap{flex:1;min-width:0}',
       '#zp-title{font:600 14px/1 Inter,system-ui;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '#zp-status{display:flex;align-items:center;gap:5px;margin-top:4px}',
-      // Flashing green dot in header
       '.zp-dot-online{width:7px;height:7px;border-radius:50%;background:#4ade80;flex-shrink:0;',
       'animation:zp-heartbeat 2s ease-in-out infinite}',
       '#zp-status span{font:400 11px/1 Inter,system-ui;color:rgba(255,255,255,.82)}',
       '.zp-ctrl{background:none;border:none;cursor:pointer;padding:6px;border-radius:8px;',
-      'color:'+ctrlColor+';transition:background .15s,color .15s;display:flex;position:relative;z-index:1;',
-      'outline:none}',
+      'color:'+ctrlColor+';transition:background .15s,color .15s;display:flex;position:relative;z-index:1;outline:none}',
       '.zp-ctrl:focus-visible{outline:2px solid rgba(255,255,255,.8);outline-offset:2px}',
       '.zp-ctrl:hover{background:'+ctrlHover+';color:#fff}',
       '.zp-ctrl svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
 
-      // ── Messages area ──
-      '#zp-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;',
-      'position:relative;',   // needed for the scroll pill
+      // ── Messages area — hidden scrollbar, smooth ──
+      '#zp-msgs{flex:1;overflow-y:auto;overflow-x:hidden;padding:16px;',
+      'display:flex;flex-direction:column;gap:12px;',
+      'position:relative;',
       '-webkit-overflow-scrolling:touch;',
-      'scrollbar-width:thin;scrollbar-color:'+scrollbar+' transparent}',
-      '#zp-msgs::-webkit-scrollbar{width:4px}',
-      '#zp-msgs::-webkit-scrollbar-thumb{background:'+scrollbar+';border-radius:4px}',
+      'scrollbar-width:none}',
+      '#zp-msgs::-webkit-scrollbar{display:none}',
 
       // ── "↓ Latest" scroll pill ──
       '#zp-scroll-pill{position:sticky;bottom:0;align-self:center;',
@@ -372,17 +398,30 @@
       'transition:opacity .2s;outline:none}',
       '#zp-scroll-pill:focus-visible{outline:2px solid var(--zp-primary)}',
 
-      // ── Bubbles ──
-      '.zp-bubble-wrap{display:flex;flex-direction:column;max-width:84%;',
-      'animation:zp-msg-in .25s ease-out both}',
-      '.zp-bubble-wrap.zp-user{align-self:flex-end;align-items:flex-end}',
-      '.zp-bubble-wrap.zp-bot{align-self:flex-start;align-items:flex-start}',
-      '.zp-bubble{padding:10px 14px;border-radius:18px;font:400 13.5px/1.55 Inter,system-ui;word-break:break-word;',
+      // ── Message rows ──
+      '.zp-msg-row{display:flex;align-items:flex-end;gap:8px;animation:zp-msg-in .25s ease-out both}',
+      '.zp-msg-row.zp-user{flex-direction:row-reverse}',
+
+      // Per-message bot avatar (28px)
+      '.zp-msg-avatar{width:28px;height:28px;border-radius:50%;flex-shrink:0;overflow:hidden;',
+      'background:'+avatarMsgBg+';display:flex;align-items:center;justify-content:center}',
+      '.zp-msg-avatar img{width:100%;height:100%;object-fit:contain;padding:3px;border-radius:50%}',
+      '.zp-msg-avatar .zp-av-letter{font:700 12px/1 Inter,system-ui;color:'+primary+'}',
+
+      // Bubble wrap
+      '.zp-bubble-wrap{display:flex;flex-direction:column;max-width:80%}',
+      '.zp-msg-row.zp-user .zp-bubble-wrap{align-items:flex-end}',
+      '.zp-msg-row.zp-bot .zp-bubble-wrap{align-items:flex-start}',
+
+      // Bubbles
+      '.zp-bubble{font:400 15px/1.5 Inter,system-ui;padding:10px 14px;word-break:break-word;',
       'border:2px solid transparent;transition:border-color .3s}',
-      '.zp-user .zp-bubble{background:var(--zp-primary);color:#fff;border-bottom-right-radius:4px}',
-      '.zp-bot .zp-bubble{background:'+botBg+';color:'+botColor+';border-bottom-left-radius:4px}',
+      '.zp-user .zp-bubble{background:var(--zp-primary);color:#fff;border-radius:18px 18px 4px 18px}',
+      '.zp-bot .zp-bubble{background:'+botBg+';color:'+botColor+';border-radius:18px 18px 18px 4px}',
       '.zp-bubble.zp-thumbs-up{border-color:#4ade80}',
-      '.zp-time{font:400 10px/1 Inter,system-ui;color:'+timeColor+';margin-top:4px;padding:0 4px}',
+
+      // Timestamp
+      '.zp-time{font:400 11px/1 Inter,system-ui;color:'+timeColor+';margin-top:3px;padding:0 2px}',
 
       // ── Action bar (thumbs up/down, copy) ──
       '.zp-action-bar{display:flex;align-items:center;gap:2px;margin-top:4px;padding:0 2px}',
@@ -414,26 +453,26 @@
 
       // ── Typing indicator ──
       '#zp-typing{display:none;align-self:flex-start;padding:10px 14px;',
-      'background:'+botBg+';border-radius:18px;border-bottom-left-radius:4px;',
-      'gap:5px;align-items:center}',
+      'background:'+botBg+';border-radius:18px 18px 18px 4px;',
+      'gap:5px;align-items:center;margin-left:36px}',
       '#zp-typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:'+dotColor+'}',
       '#zp-typing span:nth-child(1){animation:zp-dot 1.2s 0s infinite}',
       '#zp-typing span:nth-child(2){animation:zp-dot 1.2s .2s infinite}',
       '#zp-typing span:nth-child(3){animation:zp-dot 1.2s .4s infinite}',
 
-      // ── Suggestion chips (follow-up, post AI reply) ──
-      '.zp-suggestion-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;max-width:300px}',
-      '.zp-sug-chip{background:transparent;border:1.5px solid var(--zp-primary);',
-      'color:var(--zp-primary);font:500 11px/1 Inter,system-ui;padding:6px 11px;',
-      'border-radius:20px;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;',
-      'outline:none}',
-      '.zp-sug-chip:hover{background:var(--zp-primary);color:#fff}',
-      '.zp-sug-chip:focus-visible{outline:2px solid var(--zp-primary);outline-offset:2px}',
+      // ── Follow-up suggestion chips (inline below AI bubble) ──
+      '.zp-suggestions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}',
+      '.zp-suggestion{border:1px solid '+sugBorder+';color:'+sugColor+';',
+      'background:transparent;border-radius:16px;padding:5px 10px;',
+      'font:400 12px/1 Inter,system-ui;cursor:pointer;transition:all .15s;outline:none}',
+      ".zp-suggestion::before{content:'\\2192\\0020'}",
+      '.zp-suggestion:hover{border-color:var(--zp-primary);color:var(--zp-primary)}',
+      '.zp-suggestion:focus-visible{outline:2px solid var(--zp-primary);outline-offset:2px}',
 
       // ── Quick reply chips (initial) ──
       '#zp-chips{display:flex;flex-wrap:wrap;gap:7px;padding:0 16px 12px}',
       '.zp-chip{background:transparent;border:1.5px solid var(--zp-primary);',
-      'color:var(--zp-primary);font:500 12px/1 Inter,system-ui;padding:7px 13px;',
+      'color:var(--zp-primary);font:500 13px/1 Inter,system-ui;padding:7px 14px;',
       'border-radius:20px;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;',
       'outline:none}',
       '.zp-chip:hover{background:var(--zp-primary);color:#fff}',
@@ -454,7 +493,6 @@
       'cursor:pointer;transition:opacity .15s;outline:none}',
       '#zp-lead-submit:hover{opacity:.88}',
       '#zp-lead-submit:focus-visible{outline:2px solid var(--zp-primary);outline-offset:2px}',
-      // Animated checkmark confirm
       '#zp-lead-confirm{display:none;flex-direction:column;align-items:center;',
       'gap:8px;padding:8px 0;animation:zp-fade-in .35s ease-out both}',
       '#zp-lead-confirm svg{width:36px;height:36px;stroke:'+confirmC+';fill:none;stroke-width:2.5;',
@@ -463,17 +501,17 @@
       'animation:zp-check-draw .4s ease-out .1s forwards}',
       '#zp-lead-confirm span{font:500 12px/1.4 Inter,system-ui;color:'+confirmC+';text-align:center}',
 
-      // ── Input area ──
-      '#zp-input-wrap{display:flex;align-items:flex-end;gap:8px;padding:12px 14px;',
+      // ── Input area — 56px tall minimum ──
+      '#zp-input-wrap{min-height:56px;padding:10px 14px;display:flex;align-items:flex-end;gap:10px;',
       'border-top:1px solid '+divider+';flex-shrink:0}',
       '#zp-input{flex:1;background:'+inputBg+';border:1px solid '+inputBdr+';',
-      'border-radius:14px;padding:10px 14px;color:'+inputColor+';',
-      'font:400 13.5px/1.5 Inter,system-ui;',
-      'resize:none;outline:none;max-height:120px;overflow-y:auto;transition:border-color .2s}',
+      'border-radius:24px;padding:10px 16px;color:'+inputColor+';',
+      'font:400 15px/1.5 Inter,system-ui;',
+      'resize:none;outline:none;min-height:40px;max-height:120px;overflow-y:auto;transition:border-color .2s}',
       '#zp-input::placeholder{color:'+inputPh+'}',
       '#zp-input:focus{border-color:var(--zp-primary)}',
-      '#zp-input:focus-visible{outline:none}',  // handled by border-color
-      '#zp-send{width:38px;height:38px;border-radius:50%;background:var(--zp-primary);border:none;',
+      '#zp-input:focus-visible{outline:none}',
+      '#zp-send{width:40px;height:40px;border-radius:50%;background:var(--zp-primary);border:none;',
       'cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;',
       'transition:opacity .2s,transform .15s;outline:none}',
       '#zp-send:hover{transform:scale(1.08)}',
@@ -481,38 +519,46 @@
       '#zp-send:disabled{opacity:.45;cursor:default;transform:none}',
       '#zp-send svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}',
 
-      // Sound button
-      '#zp-sound-btn svg{width:16px;height:16px}',
-
-      // ── Footer ──
-      '#zp-footer{display:flex;align-items:center;justify-content:space-between;',
-      'padding:7px 14px 10px;flex-shrink:0}',
-      '#zp-footer-brand{font:400 10px/1 Inter,system-ui;color:'+footerC+'}',
-      '#zp-footer-brand a{color:'+footerA+';text-decoration:none}',
-      '#zp-footer-brand a:hover{color:var(--zp-primary)}',
+      // ── Footer bar — centred lead link + Powered by ──
+      '#zp-footer{display:flex;align-items:center;justify-content:center;gap:6px;',
+      'padding:6px 14px 10px;flex-shrink:0}',
       '#zp-lead-btn{background:none;border:none;cursor:pointer;padding:0;',
-      'font:400 10px/1 Inter,system-ui;color:var(--zp-primary);',
+      'font:400 11px/1 Inter,system-ui;color:var(--zp-primary);',
       'text-decoration:underline;opacity:.75;transition:opacity .15s;outline:none}',
       '#zp-lead-btn:hover{opacity:1}',
       '#zp-lead-btn:focus-visible{outline:2px solid var(--zp-primary);outline-offset:2px}',
       '#zp-lead-btn[disabled]{opacity:.35;cursor:default;pointer-events:none}',
+      '#zp-footer-sep{font:400 11px/1 Inter,system-ui;color:'+footerC+'}',
+      '#zp-footer-brand{font:400 11px/1 Inter,system-ui;color:'+footerC+'}',
+      '#zp-footer-brand a{color:'+footerA+';text-decoration:none}',
+      '#zp-footer-brand a:hover{color:var(--zp-primary)}',
 
-      // ── Mobile: full screen below 768 px ──
+      // ── Mobile: true full screen below 768 px ──
       '@media(max-width:767px){',
       '#zp-win{',
+      'position:fixed!important;',
       'top:0!important;left:0!important;right:0!important;bottom:0!important;',
-      'width:100%!important;max-height:100%!important;',
-      'border-radius:0!important;border:none!important;',
+      'width:100%!important;height:100dvh!important;max-height:100dvh!important;',
+      'border-radius:0!important;border:none!important;margin:0!important;',
       '}',
       '#zp-btn{bottom:16px;right:16px}',
       '}',
-
-      // Minimum 320 px width support (no extra rules needed — flexbox handles it)
     ].join('');
 
     var el = document.createElement('style');
     el.textContent = css;
     document.head.appendChild(el);
+  }
+
+  // ── Hex to RGB helper (for CSS rgba) ─────────────────────────────────────
+  function hexToRgb(hex) {
+    hex = String(hex).replace('#', '');
+    if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return '37,99,235';
+    var r = parseInt(hex.slice(0,2),16);
+    var g = parseInt(hex.slice(2,4),16);
+    var b = parseInt(hex.slice(4,6),16);
+    return r+','+g+','+b;
   }
 
   // ── Icons ─────────────────────────────────────────────────────────────────
@@ -531,6 +577,14 @@
 
   // ── DOM builders ──────────────────────────────────────────────────────────
 
+  function buildOverlay() {
+    var overlay = document.createElement('div');
+    overlay.id = 'zp-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.addEventListener('click', closeChat);
+    document.body.appendChild(overlay);
+  }
+
   function buildLauncher() {
     var btn = document.createElement('button');
     btn.id = 'zp-btn';
@@ -538,7 +592,27 @@
 
     var icon = document.createElement('span');
     icon.id = 'zp-btn-icon';
-    icon.innerHTML = ICONS.chat;
+
+    var cfg = state.config;
+    if (cfg && cfg.logoUrl) {
+      // Logo present: white background, show logo image
+      btn.classList.add('zp-has-logo');
+      var img = document.createElement('img');
+      img.className = 'zp-btn-logo';
+      img.src = cfg.logoUrl;
+      img.alt = '';
+      icon.appendChild(img);
+    } else {
+      // No logo: show first letter on primaryColor background
+      if (cfg) {
+        var letter = document.createElement('span');
+        letter.className = 'zp-btn-letter';
+        letter.textContent = getDisplayName(cfg).charAt(0).toUpperCase();
+        icon.appendChild(letter);
+      } else {
+        icon.innerHTML = ICONS.chat;
+      }
+    }
 
     // Flashing green dot
     var dot = document.createElement('span');
@@ -558,7 +632,11 @@
 
   function setLauncherIcon(iconHtml) {
     var el = document.getElementById('zp-btn-icon');
-    if (el) el.innerHTML = iconHtml;
+    if (!el) return;
+    // Only override with chat/close SVG when no logo present
+    var cfg = state.config;
+    if (cfg && cfg.logoUrl) return; // keep the logo, don't replace with chat icon
+    el.innerHTML = iconHtml;
   }
 
   function buildWindow() {
@@ -569,27 +647,37 @@
     win.style.display = 'none';
 
     var displayName = state.config ? getDisplayName(state.config) : 'Support';
+    var avatarHtml  = state.config ? buildAvatarInnerHtml(state.config, 'header') : ICONS.bot;
 
     win.innerHTML = [
+      // Header
       '<div id="zp-header">',
         '<div id="zp-header-shimmer" aria-hidden="true"></div>',
-        '<div id="zp-avatar" aria-hidden="true">'+ICONS.bot+'</div>',
-        '<div id="zp-title-wrap">',
-          '<div id="zp-title">'+escHtml(displayName)+'</div>',
-          '<div id="zp-status">',
-            '<div class="zp-dot-online" aria-hidden="true"></div>',
-            '<span>Online now</span>',
+        '<div id="zp-header-left">',
+          '<div id="zp-avatar" aria-hidden="true">'+avatarHtml+'</div>',
+          '<div id="zp-title-wrap">',
+            '<div id="zp-title">'+escHtml(displayName)+'</div>',
+            '<div id="zp-status">',
+              '<div class="zp-dot-online" aria-hidden="true"></div>',
+              '<span>Online now</span>',
+            '</div>',
           '</div>',
         '</div>',
-        '<button class="zp-ctrl" id="zp-sound-btn" title="Toggle sound" aria-label="Toggle sound">'+ICONS.soundOff+'</button>',
-        '<button class="zp-ctrl" id="zp-min-btn"   title="Minimise"     aria-label="Minimise">'+ICONS.minus+'</button>',
-        '<button class="zp-ctrl" id="zp-close-btn" title="Close"        aria-label="Close">'+ICONS.close+'</button>',
+        '<div id="zp-header-right">',
+          '<button class="zp-ctrl" id="zp-sound-btn" title="Toggle sound" aria-label="Toggle sound">'+ICONS.soundOff+'</button>',
+          '<button class="zp-ctrl" id="zp-min-btn"   title="Minimise"     aria-label="Minimise">'+ICONS.minus+'</button>',
+          '<button class="zp-ctrl" id="zp-close-btn" title="Close"        aria-label="Close">'+ICONS.close+'</button>',
+        '</div>',
       '</div>',
+      // Messages
       '<div id="zp-msgs" role="log" aria-live="polite" aria-label="Chat messages">',
-        '<button id="zp-scroll-pill" aria-label="Scroll to latest">↓ Latest</button>',
+        '<button id="zp-scroll-pill" aria-label="Scroll to latest">\u2193 Latest</button>',
       '</div>',
+      // Typing indicator
       '<div id="zp-typing" aria-label="Bot is typing" aria-live="polite"><span></span><span></span><span></span></div>',
+      // Quick reply chips
       '<div id="zp-chips" style="display:none" role="group" aria-label="Suggested replies"></div>',
+      // Lead form
       '<div id="zp-lead-form" aria-label="Leave your details">',
         '<input class="zp-lead-input" id="zp-lead-name"  type="text"  placeholder="Full Name"          autocomplete="name"  aria-label="Full Name">',
         '<input class="zp-lead-input" id="zp-lead-email" type="email" placeholder="Email"              autocomplete="email" aria-label="Email">',
@@ -600,13 +688,16 @@
           '<span>Thanks! We\'ll be in touch soon.</span>',
         '</div>',
       '</div>',
+      // Input area
       '<div id="zp-input-wrap">',
-        '<textarea id="zp-input" rows="1" placeholder="Type a message…" autocomplete="off" aria-label="Type a message"></textarea>',
+        '<textarea id="zp-input" rows="1" placeholder="Type a message\u2026" autocomplete="off" aria-label="Type a message"></textarea>',
         '<button id="zp-send" aria-label="Send message">'+ICONS.send+'</button>',
       '</div>',
+      // Footer bar
       '<div id="zp-footer">',
-        '<div id="zp-footer-brand">Powered by <a href="https://zempotis.com" target="_blank" rel="noopener">Zempotis</a></div>',
         '<button id="zp-lead-btn" aria-label="Leave your details">Leave your details</button>',
+        '<span id="zp-footer-sep">\u00B7</span>',
+        '<span id="zp-footer-brand">Powered by <a href="https://zempotis.com" target="_blank" rel="noopener">Zempotis</a></span>',
       '</div>',
     ].join('');
 
@@ -634,10 +725,8 @@
     input.addEventListener('input', function () {
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-      // User is interacting — reset nudge timer
       resetNudgeTimer();
-      // Hide suggestion chips when user starts typing
-      hideSuggestionChips();
+      hideSuggestions();
     });
 
     // Scroll event to show/hide scroll pill
@@ -696,7 +785,6 @@
     var email   = emailEl ? emailEl.value.trim() : '';
     var phone   = phoneEl ? phoneEl.value.trim() : '';
 
-    // Validate required fields
     if (!name) { if (nameEl) nameEl.focus(); return; }
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       if (emailEl) emailEl.focus();
@@ -704,38 +792,34 @@
     }
 
     var submitBtn = document.getElementById('zp-lead-submit');
-    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Sending…'; }
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Sending\u2026'; }
 
-    // POST to API
     fetch(API_BASE + '/api/lead', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientId: CLIENT_ID, name: name, email: email, phone: phone || undefined }),
     })
       .then(function () { onLeadSuccess(name); })
-      .catch(function () { onLeadSuccess(name); }); // best-effort — confirm regardless
+      .catch(function () { onLeadSuccess(name); });
   }
 
   function onLeadSuccess(name) {
     state.leadCaptured = true;
 
-    // Hide form fields, show animated checkmark
-    var nameEl  = document.getElementById('zp-lead-name');
-    var emailEl = document.getElementById('zp-lead-email');
-    var phoneEl = document.getElementById('zp-lead-phone');
+    var nameEl    = document.getElementById('zp-lead-name');
+    var emailEl   = document.getElementById('zp-lead-email');
+    var phoneEl   = document.getElementById('zp-lead-phone');
     var submitBtn = document.getElementById('zp-lead-submit');
     var confirm   = document.getElementById('zp-lead-confirm');
-    if (nameEl)   nameEl.style.display   = 'none';
-    if (emailEl)  emailEl.style.display  = 'none';
-    if (phoneEl)  phoneEl.style.display  = 'none';
+    if (nameEl)    nameEl.style.display    = 'none';
+    if (emailEl)   emailEl.style.display   = 'none';
+    if (phoneEl)   phoneEl.style.display   = 'none';
     if (submitBtn) submitBtn.style.display = 'none';
-    if (confirm)  confirm.style.display  = 'flex';
+    if (confirm)   confirm.style.display   = 'flex';
 
-    // Disable the footer lead button permanently
     var leadBtn = document.getElementById('zp-lead-btn');
     if (leadBtn) leadBtn.setAttribute('disabled', 'true');
 
-    // Bot sends a personalised follow-up message after a beat
     setTimeout(function () {
       var form = document.getElementById('zp-lead-form');
       if (form) form.classList.remove('zp-open');
@@ -757,40 +841,59 @@
     }
   }
 
-  // ── Suggestion chips ──────────────────────────────────────────────────────
+  // ── Suggestion chips (follow-up, inline below bot bubble) ─────────────────
 
-  function hideSuggestionChips() {
-    // Remove all currently visible suggestion chip rows
-    var chips = document.querySelectorAll('.zp-suggestion-chips');
+  function hideSuggestions() {
+    var chips = document.querySelectorAll('.zp-suggestions');
     chips.forEach(function (el) { el.remove(); });
   }
 
-  function appendSuggestionChips(botBubbleWrap, responseText) {
+  function appendSuggestions(bubbleWrap, responseText) {
     var chips = getSuggestionChips(responseText);
     if (!chips.length) return;
 
     var row = document.createElement('div');
-    row.className = 'zp-suggestion-chips';
+    row.className = 'zp-suggestions';
     row.setAttribute('role', 'group');
     row.setAttribute('aria-label', 'Suggested follow-up questions');
 
     chips.forEach(function (chipText) {
       var btn = document.createElement('button');
-      btn.className = 'zp-sug-chip';
+      btn.className = 'zp-suggestion';
       btn.textContent = chipText;
       btn.setAttribute('aria-label', chipText);
       btn.addEventListener('click', function () {
-        hideSuggestionChips();
+        hideSuggestions();
         sendUserMessage(chipText);
         resetNudgeTimer();
       });
       row.appendChild(btn);
     });
 
-    botBubbleWrap.appendChild(row);
+    bubbleWrap.appendChild(row);
   }
 
-  // ── Bot message append (full-featured) ───────────────────────────────────
+  // ── Build message avatar (28px, for bot rows) ─────────────────────────────
+  function buildMsgAvatar() {
+    var av = document.createElement('div');
+    av.className = 'zp-msg-avatar';
+    av.setAttribute('aria-hidden', 'true');
+    var cfg = state.config;
+    if (cfg && cfg.logoUrl) {
+      var img = document.createElement('img');
+      img.src = cfg.logoUrl;
+      img.alt = '';
+      av.appendChild(img);
+    } else {
+      var letter = document.createElement('span');
+      letter.className = 'zp-av-letter';
+      letter.textContent = (cfg ? getDisplayName(cfg) : 'S').charAt(0).toUpperCase();
+      av.appendChild(letter);
+    }
+    return av;
+  }
+
+  // ── Bot message append (full-featured) ────────────────────────────────────
 
   /**
    * appendBotMessage(content, opts)
@@ -809,9 +912,16 @@
       saveHistory();
     }
 
-    // Build bubble wrapper
+    // Outer row: avatar + bubble-wrap
+    var row = document.createElement('div');
+    row.className = 'zp-msg-row zp-bot';
+
+    // Avatar
+    row.appendChild(buildMsgAvatar());
+
+    // Bubble wrap
     var wrap = document.createElement('div');
-    wrap.className = 'zp-bubble-wrap zp-bot';
+    wrap.className = 'zp-bubble-wrap';
 
     // Bubble
     var bubble = document.createElement('div');
@@ -838,7 +948,7 @@
     thumbUpBtn.innerHTML = ICONS.thumbUp;
     thumbUpBtn.addEventListener('click', function () {
       bubble.classList.add('zp-thumbs-up');
-      showToast('Thanks! 👍');
+      showToast('Thanks! \uD83D\uDC4D');
       setTimeout(function () { bubble.classList.remove('zp-thumbs-up'); }, 2000);
     });
 
@@ -848,7 +958,6 @@
     thumbDnBtn.setAttribute('aria-label', 'Thumbs down');
     thumbDnBtn.innerHTML = ICONS.thumbDn;
     thumbDnBtn.addEventListener('click', function () {
-      // Show inline feedback input if not already shown
       var existing = wrap.querySelector('.zp-feedback-wrap');
       if (existing) return;
       var feedWrap = document.createElement('div');
@@ -881,17 +990,16 @@
     copyBtn.innerHTML = ICONS.copy;
     copyBtn.addEventListener('click', function () {
       navigator.clipboard.writeText(content).then(function () {
-        showToast('Copied ✓');
+        showToast('Copied \u2713');
       }).catch(function () {
-        // Fallback for browsers without clipboard API
         var ta = document.createElement('textarea');
         ta.value = content;
         ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
         document.body.appendChild(ta);
         ta.select();
-        document.execCommand('copy');
+        try { (/** @type {any} */ (document)).execCommand('copy'); } catch (_) {} // legacy fallback
         ta.remove();
-        showToast('Copied ✓');
+        showToast('Copied \u2713');
       });
     });
 
@@ -900,7 +1008,7 @@
     actionBar.appendChild(copyBtn);
     wrap.appendChild(actionBar);
 
-    // Book Now button (appended before chips)
+    // Book Now button
     if (opts.bookNow && state.config && state.config.url) {
       var bookBtn = document.createElement('a');
       bookBtn.className = 'zp-book-btn';
@@ -912,12 +1020,13 @@
       wrap.appendChild(bookBtn);
     }
 
-    msgs.appendChild(wrap);
+    row.appendChild(wrap);
+    msgs.appendChild(row);
     scrollToBottom();
 
-    // Suggestion chips — after 300 ms
+    // Suggestion chips inline after 300 ms
     setTimeout(function () {
-      appendSuggestionChips(wrap, content);
+      appendSuggestions(wrap, content);
       scrollToBottom();
     }, 300);
 
@@ -937,8 +1046,12 @@
     if (!msgs) return;
 
     var now = new Date();
+
+    var row = document.createElement('div');
+    row.className = 'zp-msg-row zp-user';
+
     var wrap = document.createElement('div');
-    wrap.className = 'zp-bubble-wrap zp-user';
+    wrap.className = 'zp-bubble-wrap';
 
     var bubble = document.createElement('div');
     bubble.className = 'zp-bubble';
@@ -950,14 +1063,14 @@
 
     wrap.appendChild(bubble);
     wrap.appendChild(timeEl);
-    msgs.appendChild(wrap);
+    row.appendChild(wrap);
+    msgs.appendChild(row);
     scrollToBottom();
   }
 
   function renderHistory() {
     var msgs = document.getElementById('zp-msgs');
     if (!msgs) return;
-    // Keep the scroll pill as first child
     var pill = document.getElementById('zp-scroll-pill');
     msgs.innerHTML = '';
     if (pill) msgs.appendChild(pill);
@@ -966,9 +1079,12 @@
       if (m.role === 'user') {
         appendUserMessage(m.content);
       } else {
-        // Re-render bot messages simply (no action bars for history to keep it fast)
+        // Re-render bot messages simply for history (no action bars to keep it fast)
+        var row = document.createElement('div');
+        row.className = 'zp-msg-row zp-bot';
+        row.appendChild(buildMsgAvatar());
         var wrap = document.createElement('div');
-        wrap.className = 'zp-bubble-wrap zp-bot';
+        wrap.className = 'zp-bubble-wrap';
         var bubble = document.createElement('div');
         bubble.className = 'zp-bubble';
         bubble.innerHTML = escHtml(m.content).replace(/\n/g, '<br>');
@@ -977,7 +1093,8 @@
         timeEl.textContent = formatTime(new Date(m.time));
         wrap.appendChild(bubble);
         wrap.appendChild(timeEl);
-        msgs.appendChild(wrap);
+        row.appendChild(wrap);
+        msgs.appendChild(row);
       }
     });
     scrollToBottom();
@@ -1021,6 +1138,19 @@
     if (chips) chips.style.display = 'none';
   }
 
+  // ── Overlay helpers ───────────────────────────────────────────────────────
+  function showOverlay() {
+    if (window.innerWidth < 768) {
+      var overlay = document.getElementById('zp-overlay');
+      if (overlay) overlay.classList.add('zp-visible');
+    }
+  }
+
+  function hideOverlay() {
+    var overlay = document.getElementById('zp-overlay');
+    if (overlay) overlay.classList.remove('zp-visible');
+  }
+
   // ── Open / minimise / close ───────────────────────────────────────────────
   function toggleOpen() {
     if (state.isOpen && !state.isMinimised) { minimise(); }
@@ -1038,13 +1168,17 @@
       win.style.display = 'flex';
       // Re-trigger spring slide-up animation
       win.style.animation = 'none';
-      // Force reflow
       void win.offsetHeight;
       win.style.animation = 'zp-slide-up .35s cubic-bezier(.34,1.56,.64,1) forwards';
     }
-    if (btn) btn.classList.add('zp-open');   // stop breathing
+    if (btn) btn.classList.add('zp-open');
 
-    setLauncherIcon(ICONS.close);
+    // Show close icon only when no logo
+    if (!state.config || !state.config.logoUrl) {
+      setLauncherIcon(ICONS.close);
+    }
+
+    showOverlay();
     updateBadge();
 
     renderHistory();
@@ -1058,7 +1192,6 @@
     var input = document.getElementById('zp-input');
     if (input) setTimeout(function () { input.focus(); }, 200);
 
-    // Start idle nudge timer
     resetNudgeTimer();
   }
 
@@ -1070,7 +1203,10 @@
     var btn = document.getElementById('zp-btn');
     if (win) win.style.display = 'none';
     if (btn) btn.classList.remove('zp-open');
-    setLauncherIcon(ICONS.chat);
+    if (!state.config || !state.config.logoUrl) {
+      setLauncherIcon(ICONS.chat);
+    }
+    hideOverlay();
     updateBadge();
   }
 
@@ -1083,7 +1219,10 @@
     var btn = document.getElementById('zp-btn');
     if (win) win.style.display = 'none';
     if (btn) btn.classList.remove('zp-open');
-    setLauncherIcon(ICONS.chat);
+    if (!state.config || !state.config.logoUrl) {
+      setLauncherIcon(ICONS.chat);
+    }
+    hideOverlay();
     updateBadge();
   }
 
@@ -1094,11 +1233,13 @@
     state.messages.push({ role: 'assistant', content: greetingText, time: now.toISOString() });
     saveHistory();
 
-    // Render greeting as a bot bubble (without action bar — it's the welcome message)
     var msgs = document.getElementById('zp-msgs');
     if (msgs) {
+      var row = document.createElement('div');
+      row.className = 'zp-msg-row zp-bot';
+      row.appendChild(buildMsgAvatar());
       var wrap = document.createElement('div');
-      wrap.className = 'zp-bubble-wrap zp-bot';
+      wrap.className = 'zp-bubble-wrap';
       var bubble = document.createElement('div');
       bubble.className = 'zp-bubble';
       bubble.innerHTML = escHtml(greetingText).replace(/\n/g, '<br>');
@@ -1107,7 +1248,8 @@
       timeEl.textContent = formatTime(now);
       wrap.appendChild(bubble);
       wrap.appendChild(timeEl);
-      msgs.appendChild(wrap);
+      row.appendChild(wrap);
+      msgs.appendChild(row);
       scrollToBottom();
     }
 
@@ -1127,7 +1269,7 @@
 
   function sendUserMessage(text) {
     hideQuickReplies();
-    hideSuggestionChips();
+    hideSuggestions();
     cancelNudgeTimer();
 
     var now = new Date();
@@ -1160,7 +1302,6 @@
     var needsBookNow = hasBookingKeyword(text);
 
     callAPI(needsBookNow);
-    // Reset nudge after sending
     resetNudgeTimer();
   }
 
@@ -1180,7 +1321,6 @@
       .then(function (data) {
         showTyping(false);
         var reply = data.reply || "Sorry, I couldn\u2019t get a response right now.";
-        // Booking check: user msg OR bot reply
         var showBook = forceBookNow || hasBookingKeyword(reply);
         appendBotMessage(reply, { bookNow: showBook });
         resetNudgeTimer();
@@ -1208,6 +1348,7 @@
 
     injectStyles(primary, accent, dark);
     loadHistory();
+    buildOverlay();
     buildLauncher();
     buildWindow();
 
@@ -1231,6 +1372,8 @@
           accentColor: '#7c3aed',
           greeting: 'Hi! How can I help you?',
           quickReplies: [],
+          logoUrl: null,
+          url: null,
         });
       });
   }
