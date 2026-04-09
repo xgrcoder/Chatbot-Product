@@ -507,11 +507,13 @@
 
       // ── Input area — 56px tall minimum ──
       '#zp-input-wrap{min-height:56px;padding:10px 14px;display:flex;align-items:flex-end;gap:10px;',
-      'border-top:1px solid '+divider+';flex-shrink:0}',
+      'border-top:1px solid '+divider+';flex-shrink:0;',
+      '-webkit-tap-highlight-color:transparent;outline:none}',
       '#zp-input{flex:1;background:'+inputBg+';border:1px solid '+inputBdr+';',
       'border-radius:24px;padding:10px 16px;color:'+inputColor+';',
       'font:400 15px/1.5 Inter,system-ui;',
-      'resize:none;outline:none;min-height:40px;max-height:120px;overflow-y:auto;transition:border-color .2s}',
+      'resize:none;outline:none;min-height:40px;max-height:120px;overflow-y:auto;transition:border-color .2s;',
+      '-webkit-appearance:none;-webkit-tap-highlight-color:transparent}',
       '#zp-input::placeholder{color:'+inputPh+'}',
       '#zp-input:focus{border-color:var(--zp-primary)}',
       '#zp-input:focus-visible{outline:none}',
@@ -536,7 +538,7 @@
       '.zp-lead-chip:hover{background:var(--zp-primary)!important;color:#fff!important}',
 
       // ── Mobile: true full screen below 768 px ──
-      '@media(max-width:767px){',
+      '@media(max-width:600px){',
       '#zp-win{',
       'position:fixed!important;',
       'top:0!important;left:0!important;right:0!important;bottom:0!important;',
@@ -739,7 +741,7 @@
         var winEl = document.getElementById('zp-win');
         if (!winEl || !state.isOpen) return;
         // Use visualViewport.width — reliable on mobile; window.innerWidth can fire on desktop
-        if (window.visualViewport.width < 768) {
+        if (window.visualViewport.width < 600) {
           var vpHeight = window.visualViewport.height;
           winEl.style.height = vpHeight + 'px';
           winEl.style.maxHeight = vpHeight + 'px';
