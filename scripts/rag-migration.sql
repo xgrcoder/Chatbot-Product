@@ -75,3 +75,19 @@ create index if not exists clients_client_id_idx
 
 alter table public.clients enable row level security;
 -- Service-role key bypasses RLS — no policy needed for server-side access.
+
+-- 5. Leads table
+--    Stores lead capture form submissions from the widget.
+create table if not exists public.leads (
+  id         uuid        primary key default gen_random_uuid(),
+  client_id  text        not null,
+  name       text        not null,
+  email      text        not null,
+  phone      text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists leads_client_id_idx on public.leads (client_id);
+
+alter table public.leads enable row level security;
+-- Service-role key bypasses RLS — no policy needed for server-side access.
