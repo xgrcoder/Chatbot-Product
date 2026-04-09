@@ -7,8 +7,7 @@
 
 import { NextRequest } from 'next/server';
 import Groq from 'groq-sdk';
-import * as fs from 'fs';
-import * as path from 'path';
+import { getClientConfig } from '@/lib/clientRegistry';
 import { retrieveContext } from '@/lib/rag';
 
 const CORS = {
@@ -19,28 +18,6 @@ const CORS = {
 
 export async function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
-}
-
-interface ClientConfig {
-  clientId: string;
-  name: string;
-  url: string;
-  primaryColor: string;
-  accentColor: string;
-  greeting: string;
-  quickReplies: string[];
-  content: string;
-}
-
-function loadClientConfig(clientId: string): ClientConfig | null {
-  if (!/^[a-z0-9-]+$/.test(clientId)) return null;
-  // public/clients/ is always included in Vercel's static output
-  const filePath = path.join(process.cwd(), 'public', 'clients', `${clientId}.json`);
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as ClientConfig;
-  } catch {
-    return null;
-  }
 }
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -61,7 +38,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const client = loadClientConfig(clientId);
+    const client = getClientConfig(clientId);
     if (!client) {
       return Response.json(
         { error: `Client "${clientId}" not found` },
@@ -80,7 +57,7 @@ export async function POST(request: NextRequest) {
 
     const systemPrompt = `You are a helpful, friendly AI assistant for ${client.name}.
 Answer questions from website visitors accurately and concisely.
-Be professional, warm, and on-brand. Keep answers brief — 2-4 sentences unless more detail is needed.
+Be professional, warm, and on-brand. Keep answers to 2-4 sentences unless more detail is needed.
 If you don't know something, say so honestly and suggest they contact the team directly.
 Never make up information not in the provided context.
 ${contextSection}`;

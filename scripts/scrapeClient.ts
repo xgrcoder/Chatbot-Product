@@ -365,21 +365,59 @@ async function scrape() {
     chunkCount: uploaded,
   };
 
-  // Save to public/clients/ so Vercel always includes it in deployments
+  // Save JSON to public/clients/
   const outDir = path.resolve(process.cwd(), 'public', 'clients');
   fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, `${clientId}.json`);
   fs.writeFileSync(outPath, JSON.stringify(clientConfig, null, 2), 'utf-8');
   console.log(`💾 Client config saved → ${outPath}`);
 
+  // Register client in lib/clientRegistry.ts so it is bundled by Vercel
+  registerInClientRegistry(clientId);
+
   // ── Embed code ────────────────────────────────────────────────────────────
   console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✨ Done! Add this embed code to your client's site:
 
-<script src="https://chat.zempotis.com/widget.js" data-client="${clientId}" async></script>
+<script src="https://zempotis-chat.vercel.app/widget.js" data-client="${clientId}" async></script>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
+}
+
+/**
+ * Update lib/clientRegistry.ts to include the new client.
+ * This ensures the config is bundled by Turbopack and always available on Vercel.
+ */
+function registerInClientRegistry(id: string) {
+  const registryPath = path.resolve(process.cwd(), 'lib', 'clientRegistry.ts');
+  let source = fs.readFileSync(registryPath, 'utf-8');
+
+  // Add import if not already present
+  const importLine = `import ${camelCase(id)} from '../public/clients/${id}.json';`;
+  if (!source.includes(importLine)) {
+    // Insert after the last existing import line
+    source = source.replace(
+      /(import .+ from '.+\.json';)\n/,
+      `$1\n${importLine}\n`
+    );
+  }
+
+  // Add entry to registry object if not already present
+  const registryEntry = `  '${id}': ${camelCase(id)} as ClientConfig,`;
+  if (!source.includes(registryEntry)) {
+    source = source.replace(
+      /(const registry: Record<string, ClientConfig> = \{)/,
+      `$1\n${registryEntry}`
+    );
+  }
+
+  fs.writeFileSync(registryPath, source, 'utf-8');
+  console.log(`📋 Registered "${id}" in lib/clientRegistry.ts`);
+}
+
+function camelCase(str: string): string {
+  return str.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 }
 
 scrape().catch(err => {
