@@ -638,6 +638,37 @@
     el.innerHTML = iconHtml;
   }
 
+  // Mobile layout helpers — defined at closure scope so both buildWindow and openChat can access them
+  function isMobileDevice() {
+    var hasTouchScreen = (
+      'ontouchstart' in window ||
+      navigator.maxTouchPoints > 1 ||
+      window.matchMedia('(pointer: coarse)').matches
+    );
+    var isSmallScreen = (window.visualViewport
+      ? window.visualViewport.width
+      : window.innerWidth) < 768;
+    return hasTouchScreen && isSmallScreen;
+  }
+
+  function applyMobileLayout() {
+    var winEl = document.getElementById('zp-win');
+    if (!winEl) return;
+    if (isMobileDevice()) {
+      winEl.classList.add('zp-mobile');
+      if (window.visualViewport) {
+        var vpHeight = window.visualViewport.height;
+        winEl.style.height = vpHeight + 'px';
+        winEl.style.maxHeight = vpHeight + 'px';
+      }
+      setTimeout(scrollToBottom, 100);
+    } else {
+      winEl.classList.remove('zp-mobile');
+      winEl.style.height = '';
+      winEl.style.maxHeight = '';
+    }
+  }
+
   function buildWindow() {
     var win = document.createElement('div');
     win.id = 'zp-win';
@@ -734,37 +765,6 @@
         scrollPill.style.display = (distFromBottom > 100) ? 'block' : 'none';
       }
     });
-
-    // Mobile layout — JS-driven: touch capability AND small screen
-    function isMobileDevice() {
-      var hasTouchScreen = (
-        'ontouchstart' in window ||
-        navigator.maxTouchPoints > 1 ||
-        window.matchMedia('(pointer: coarse)').matches
-      );
-      var isSmallScreen = (window.visualViewport
-        ? window.visualViewport.width
-        : window.innerWidth) < 768;
-      return hasTouchScreen && isSmallScreen;
-    }
-
-    function applyMobileLayout() {
-      var winEl = document.getElementById('zp-win');
-      if (!winEl) return;
-      if (isMobileDevice()) {
-        winEl.classList.add('zp-mobile');
-        if (window.visualViewport) {
-          var vpHeight = window.visualViewport.height;
-          winEl.style.height = vpHeight + 'px';
-          winEl.style.maxHeight = vpHeight + 'px';
-        }
-        setTimeout(scrollToBottom, 100);
-      } else {
-        winEl.classList.remove('zp-mobile');
-        winEl.style.height = '';
-        winEl.style.maxHeight = '';
-      }
-    }
 
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', function () {
