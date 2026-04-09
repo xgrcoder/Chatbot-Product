@@ -314,9 +314,6 @@
       '@keyframes zp-shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}',
       '@keyframes zp-check-draw{from{stroke-dashoffset:50}to{stroke-dashoffset:0}}',
 
-      // ── Overlay (mobile backdrop) ──
-      '#zp-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2147483638}',
-      '#zp-overlay.zp-visible{display:block}',
 
       // ── Launcher button ──
       // Default state (no logo): primaryColor background
@@ -349,7 +346,10 @@
       '#zp-badge.zp-pulse{animation:zp-badge-pulse 1.2s ease-in-out infinite}',
 
       // ── Chat window — zero gaps, overflow:hidden clips header ──
-      '#zp-win{position:fixed;bottom:96px;right:24px;width:380px;max-height:620px;',
+      '#zp-win{position:fixed;bottom:88px;right:16px;',
+      'width:min(380px, calc(100vw - 32px));',
+      'height:min(580px, calc(100svh - 120px));',
+      'max-height:min(580px, calc(100svh - 120px));',
       'background:'+winBg+';backdrop-filter:blur(32px) saturate(1.4);',
       '-webkit-backdrop-filter:blur(32px) saturate(1.4);',
       'border:1px solid '+winBorder+';border-radius:20px;',
@@ -487,9 +487,13 @@
       '.zp-chip:focus-visible{outline:2px solid var(--zp-primary);outline-offset:2px}',
 
       // ── Lead capture form ──
-      '#zp-lead-form{display:none;flex-direction:column;gap:8px;',
+      '#zp-lead-form{position:relative;display:none;flex-direction:column;gap:8px;',
       'padding:12px 14px;border-top:1px solid '+divider+';flex-shrink:0}',
       '#zp-lead-form.zp-open{display:flex}',
+      '#zp-lead-close{position:absolute;top:8px;right:10px;background:none;border:none;',
+      'font:400 20px/1 Inter,system-ui;cursor:pointer;color:'+footerC+';padding:4px 8px;',
+      'border-radius:6px;transition:color .15s;outline:none}',
+      '#zp-lead-close:hover{color:var(--zp-primary)}',
       '.zp-lead-input{background:'+inputBg+';border:1px solid '+inputBdr+';',
       'border-radius:10px;padding:9px 12px;color:'+inputColor+';',
       'font:400 13px/1 Inter,system-ui;outline:none;transition:border-color .2s}',
@@ -543,15 +547,6 @@
       'font-weight:500!important}',
       '.zp-lead-chip:hover{background:var(--zp-primary)!important;color:#fff!important}',
 
-      // ── Mobile: JS-driven .zp-mobile class (touch + small screen) ──
-      '#zp-win.zp-mobile{',
-      'position:fixed!important;',
-      'top:0!important;left:0!important;right:0!important;bottom:0!important;',
-      'width:100vw!important;height:100svh!important;max-height:100svh!important;',
-      'border-radius:0!important;border:none!important;margin:0!important;',
-      '}',
-      '#zp-win.zp-mobile #zp-msgs{padding:12px}',
-      '#zp-win.zp-mobile #zp-input-wrap{padding:8px 10px}',
       '@media(max-width:480px){#zp-btn{bottom:16px;right:16px;width:52px;height:52px}}',
     ].join('');
 
@@ -586,14 +581,6 @@
   };
 
   // ── DOM builders ──────────────────────────────────────────────────────────
-
-  function buildOverlay() {
-    var overlay = document.createElement('div');
-    overlay.id = 'zp-overlay';
-    overlay.setAttribute('aria-hidden', 'true');
-    overlay.addEventListener('click', closeChat);
-    document.body.appendChild(overlay);
-  }
 
   function buildLauncher() {
     var btn = document.createElement('button');
@@ -649,37 +636,6 @@
     el.innerHTML = iconHtml;
   }
 
-  // Mobile layout helpers — defined at closure scope so both buildWindow and openChat can access them
-  function isMobileDevice() {
-    var hasTouchScreen = (
-      'ontouchstart' in window ||
-      navigator.maxTouchPoints > 1 ||
-      window.matchMedia('(pointer: coarse)').matches
-    );
-    var isSmallScreen = (window.visualViewport
-      ? window.visualViewport.width
-      : window.innerWidth) < 768;
-    return hasTouchScreen && isSmallScreen;
-  }
-
-  function applyMobileLayout() {
-    var winEl = document.getElementById('zp-win');
-    if (!winEl) return;
-    if (isMobileDevice()) {
-      winEl.classList.add('zp-mobile');
-      if (window.visualViewport) {
-        var vpHeight = window.visualViewport.height;
-        winEl.style.height = vpHeight + 'px';
-        winEl.style.maxHeight = vpHeight + 'px';
-      }
-      setTimeout(scrollToBottom, 100);
-    } else {
-      winEl.classList.remove('zp-mobile');
-      winEl.style.height = '';
-      winEl.style.maxHeight = '';
-    }
-  }
-
   function buildWindow() {
     var win = document.createElement('div');
     win.id = 'zp-win';
@@ -724,6 +680,7 @@
       '<div id="zp-chips" style="display:none" role="group" aria-label="Suggested replies"></div>',
       // Lead form
       '<div id="zp-lead-form" aria-label="Leave your details">',
+        '<button id="zp-lead-close" aria-label="Close form">\u00d7</button>',
         '<input class="zp-lead-input" id="zp-lead-name"  type="text"  placeholder="Full Name"          autocomplete="name"  aria-label="Full Name">',
         '<input class="zp-lead-input" id="zp-lead-email" type="email" placeholder="Email"              autocomplete="email" aria-label="Email">',
         '<input class="zp-lead-input" id="zp-lead-phone" type="tel"   placeholder="Phone (optional)"   autocomplete="tel"   aria-label="Phone (optional)">',
@@ -781,10 +738,11 @@
       }
     });
 
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', function () {
-        if (!state.isOpen) return;
-        applyMobileLayout();
+    var leadClose = win.querySelector('#zp-lead-close');
+    if (leadClose) {
+      leadClose.addEventListener('click', function () {
+        var form = document.getElementById('zp-lead-form');
+        if (form) form.classList.remove('zp-open');
       });
     }
   }
@@ -1194,19 +1152,6 @@
     if (chips) chips.style.display = 'none';
   }
 
-  // ── Overlay helpers ───────────────────────────────────────────────────────
-  function showOverlay() {
-    if (window.innerWidth < 768) {
-      var overlay = document.getElementById('zp-overlay');
-      if (overlay) overlay.classList.add('zp-visible');
-    }
-  }
-
-  function hideOverlay() {
-    var overlay = document.getElementById('zp-overlay');
-    if (overlay) overlay.classList.remove('zp-visible');
-  }
-
   // ── Open / minimise / close ───────────────────────────────────────────────
   function toggleOpen() {
     if (state.isOpen && !state.isMinimised) { minimise(); }
@@ -1222,7 +1167,6 @@
     var btn = document.getElementById('zp-btn');
     if (win) {
       win.style.display = 'flex';
-      applyMobileLayout();
       // Re-trigger spring slide-up animation
       win.style.animation = 'none';
       void win.offsetHeight;
@@ -1235,7 +1179,6 @@
       setLauncherIcon(ICONS.close);
     }
 
-    showOverlay();
     updateBadge();
 
     renderHistory();
@@ -1263,7 +1206,6 @@
     if (!state.config || !state.config.logoUrl) {
       setLauncherIcon(ICONS.chat);
     }
-    hideOverlay();
     updateBadge();
   }
 
@@ -1279,7 +1221,6 @@
     if (!state.config || !state.config.logoUrl) {
       setLauncherIcon(ICONS.chat);
     }
-    hideOverlay();
     updateBadge();
   }
 
@@ -1405,7 +1346,6 @@
 
     injectStyles(primary, accent, dark);
     loadHistory();
-    buildOverlay();
     buildLauncher();
     buildWindow();
 
