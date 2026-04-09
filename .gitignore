@@ -40,5 +40,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# client data — contains scraped content, never commit to source control
-/data/clients/
+# client data — content is committed so Vercel can serve it at runtime
+# /data/clients/  ← intentionally unblocked

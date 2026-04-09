@@ -434,40 +434,32 @@
     var sendBtn = document.getElementById('zp-send');
     if (sendBtn) sendBtn.disabled = true;
 
-    // Lead capture: intercept 2nd user message if not yet captured
-    if (state.msgCount === 2 && !state.leadCaptured) {
+    // Lead capture: trigger on 4th user message — after the conversation is warm
+    if (state.msgCount === 4 && !state.leadCaptured && !state.leadStep) {
       state.leadStep = 'ask_name';
-      simulateBotReply("Before I continue — could I grab your name so I can personalise your experience?");
+      simulateBotReply("Quick one — could I get your name so I can personalise your experience?");
       return;
     }
     if (state.leadStep === 'ask_name') {
       state.leadName = text;
       state.leadStep = 'ask_email';
-      simulateBotReply("Thanks, " + escHtml(text.split(' ')[0]) + "! And your email address, so we can follow up if needed?");
+      simulateBotReply("Thanks, " + escHtml(text.split(' ')[0]) + "! What's your email in case we need to follow up?");
       return;
     }
     if (state.leadStep === 'ask_email') {
+      // Validate email before accepting
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+        simulateBotReply("That doesn't look like a valid email address — could you double-check it?");
+        return;
+      }
       state.leadEmail = text;
       state.leadStep = 'done';
       state.leadCaptured = true;
-      simulateBotReply("Perfect! I've noted that down. Now, let me answer your question…");
-      // Re-send the last actual question (the one before lead capture started)
-      setTimeout(function () {
-        var prevUserMsg = findLastRealQuestion();
-        if (prevUserMsg) callAPI(prevUserMsg);
-      }, 1200);
+      simulateBotReply("Perfect, thanks " + escHtml(state.leadName.split(' ')[0]) + "! Go ahead — what would you like to know?");
       return;
     }
 
-    callAPI(text);
-  }
-
-  function findLastRealQuestion() {
-    // Find the user message that triggered lead capture (msgCount === 2 message)
-    var userMsgs = state.messages.filter(function (m) { return m.role === 'user'; });
-    // It's the message that was at position 2 (0-indexed: position 1)
-    if (userMsgs.length >= 2) return userMsgs[1].content;
-    return null;
+    callAPI();
   }
 
   function simulateBotReply(text) {
