@@ -316,16 +316,63 @@ async function fetchShopifyContent(origin: string): Promise<string> {
 
 // ── content extraction ────────────────────────────────────────────────────────
 async function extractContent(page: Page): Promise<{ text: string; headings: string[] }> {
-  // Click accordions / expandable sections first
+  // ── Pass 1: snapshot content BEFORE clicking accordions ──────────────────────
+  // Some sites (e.g. JS ordering widgets) replace initial static content once fully
+  // rendered; capturing here preserves any content visible at load time.
+  let preText = '';
+  try {
+    preText = await (page.evaluate(`(function(){
+      return document.body ? (document.body.innerText || '') : '';
+    })()`) as unknown as Promise<string>);
+  } catch { /* best-effort */ }
+
+  // ── Click accordions / expandable sections — only target closed/hidden elements ─
   try {
     await page.evaluate(`(function(){
+      // Reliable "definitely closed" indicators
+      document.querySelectorAll('[aria-expanded="false"]').forEach(function(el) { el.click(); });
+      // Native <details> that are not yet open
+      document.querySelectorAll('details:not([open]) summary').forEach(function(el) { el.click(); });
+      // Bootstrap / common accordion toggles that reference a collapsed target
       document.querySelectorAll(
-        '[aria-expanded="false"], .accordion-toggle, .faq-toggle, details summary, [data-toggle], [data-bs-toggle]'
+        '.accordion-toggle, .faq-toggle, [data-toggle="collapse"], [data-bs-toggle="collapse"], [data-toggle="tab"], [data-bs-toggle="tab"]'
       ).forEach(function(el) { el.click(); });
+      // Menu/accordion specific class patterns — only click if not already expanded
+      document.querySelectorAll('[class*="accordion"] [class*="header"], [class*="accordion"] [class*="title"], [class*="accordion"] [class*="toggle"]').forEach(function(el) {
+        var p = el.closest('[class*="accordion"]');
+        if (p && !p.hasAttribute("open") && p.getAttribute("aria-expanded") !== "true") {
+          el.click();
+        }
+      });
     })()`);
   } catch { /* best-effort */ }
 
-  await new Promise(r => setTimeout(r, 500));
+  // Also click menu category buttons / list items in ordering widgets (e.g. MoreEats, Flipdish)
+  // These load dish content dynamically per-category rather than using standard accordion patterns
+  try {
+    const categoryCount = await (page.evaluate(`(function(){
+      var clicked = 0;
+      // Look for category-style buttons/links that aren't nav items
+      var candidates = document.querySelectorAll(
+        'button[class*="category"], button[class*="section"], button[class*="tab"], ' +
+        'li[class*="category"], li[class*="section"], [role="tab"], [role="button"][class*="cat"]'
+      );
+      candidates.forEach(function(el) {
+        var txt = el.innerText && el.innerText.trim();
+        if (txt && txt.length > 1 && txt.length < 60) { el.click(); clicked++; }
+      });
+      return clicked;
+    })()`) as unknown as Promise<number>);
+    if (categoryCount > 0) {
+      await new Promise(r => setTimeout(r, 1500)); // extra wait for category content to load
+    }
+  } catch { /* best-effort */ }
+
+  // Wait 2 s for animations to fully render before extracting
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Scroll again after expanding — triggers any lazy-loaded content revealed by accordions
+  await scrollPage(page);
 
   const iife = `(function() {
     // Remove noise: nav chrome, cookie banners, popups, modals
@@ -377,13 +424,27 @@ async function extractContent(page: Page): Promise<{ text: string; headings: str
       if (tt) parts.push(tt);
     });
 
-    // Price context
+    // Price context — aggressive: capture dish name + price together
     var priceTexts = [];
+    var priceSeen = {};
+    // First pass: menu/dish/item/price specific containers
+    document.querySelectorAll(
+      '[class*="menu"] *, [class*="dish"] *, [class*="item"] *, [class*="price"] *, [class*="product"] *'
+    ).forEach(function(el) {
+      var t = el.innerText;
+      if (t && /[\u00A3$\u20AC]/.test(t)) {
+        // Prefer parent text for "dish name + price" context
+        var parent = el.parentElement;
+        var ctx = (parent && parent.innerText) ? parent.innerText.trim().slice(0, 300) : t.trim().slice(0, 300);
+        if (ctx && !priceSeen[ctx]) { priceSeen[ctx] = true; priceTexts.push(ctx); }
+      }
+    });
+    // Second pass: any element with a currency symbol not yet captured
     document.querySelectorAll('*').forEach(function(el) {
       var t = el.innerText;
       if (t && /[\u00A3$\u20AC]/.test(t) && el.children.length < 3) {
         var trimmed = t.trim().slice(0, 200);
-        if (trimmed) priceTexts.push(trimmed);
+        if (trimmed && !priceSeen[trimmed]) { priceSeen[trimmed] = true; priceTexts.push(trimmed); }
       }
     });
     if (priceTexts.length) parts.push(priceTexts.join('\\n'));
@@ -402,7 +463,31 @@ async function extractContent(page: Page): Promise<{ text: string; headings: str
     return { text: dedupedLines.join('\\n'), headings: headings };
   })()`;
 
-  return page.evaluate(iife) as unknown as Promise<{ text: string; headings: string[] }>;
+  const result = await (page.evaluate(iife) as unknown as Promise<{ text: string; headings: string[] }>);
+
+  // Merge pre-accordion snapshot — ensures content visible before JS widgets took over is preserved
+  if (preText && preText.length > 100) {
+    result.text = preText + '\n' + result.text;
+  }
+
+  // ── Also extract text from child iframes (e.g. embedded menu/ordering widgets) ──
+  const frameIife = `(function(){
+    try {
+      var h = document.body ? (document.body.innerText || '') : '';
+      return h.trim();
+    } catch(e) { return ''; }
+  })()`;
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    try {
+      const frameText = (await (frame.evaluate(frameIife) as unknown as Promise<string>)).trim();
+      if (frameText && frameText.length > 100) {
+        result.text += '\n' + frameText;
+      }
+    } catch { /* cross-origin frames may throw — skip silently */ }
+  }
+
+  return result;
 }
 
 // ── colour detection ──────────────────────────────────────────────────────────
@@ -677,6 +762,36 @@ async function scrape() {
     });
     await page.setViewport({ width: 1366, height: 768 });
 
+    // ── Intercept JSON API responses (e.g. ordering widget menu APIs) ─────────
+    const capturedApiText: string[] = [];
+    await page.setRequestInterception(true);
+    page.on('request', (req: { continue: () => void }) => req.continue());
+    page.on('response', async (res: { status: () => number; headers: () => Record<string, string>; url: () => string; text: () => Promise<string> }) => {
+      try {
+        const ct = res.headers()['content-type'] || '';
+        if (res.status() >= 200 && res.status() < 300 && ct.includes('json')) {
+          const url = res.url();
+          // Skip very small responses and tracking/analytics endpoints
+          if (url.includes('analytics') || url.includes('tracking') || url.includes('pixel')) return;
+          const raw = await res.text();
+          if (raw.length < 100 || raw.length > 500_000) return;
+          // Flatten JSON to strings — extracts names/prices/descriptions recursively
+          const flatten = (v: unknown): string => {
+            if (typeof v === 'string') return v.length > 2 ? v : '';
+            if (typeof v === 'number') return String(v);
+            if (Array.isArray(v)) return v.map(flatten).filter(Boolean).join(' ');
+            if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).map(flatten).filter(Boolean).join(' ');
+            return '';
+          };
+          try {
+            const json = JSON.parse(raw);
+            const text = flatten(json).trim();
+            if (text.length > 100) capturedApiText.push(text);
+          } catch { /* not valid JSON */ }
+        }
+      } catch { /* response body may be unavailable */ }
+    });
+
     let pageCount = 0;
     while (queue.length > 0 && pageCount < MAX_PAGES) {
       const url = queue.shift()!;
@@ -741,7 +856,39 @@ async function scrape() {
       }
 
       // ── Extract and chunk page content ────────────────────────────────────
-      const { text, headings } = await extractContent(page);
+      capturedApiText.length = 0; // clear stale responses from previous page
+
+      let { text, headings } = await extractContent(page);
+
+      // Drain API responses collected during this page's load + accordion expansion
+      const apiTextForPage = capturedApiText.splice(0).join('\n');
+      if (apiTextForPage.length > 100) {
+        text = text + '\n' + apiTextForPage;
+      }
+
+      // Fallback: if JS rendering yielded almost nothing (e.g. ordering widget replaced
+      // static content), also download raw HTML source and strip tags for plain text
+      const jsChunkCount = splitIntoChunks(text, headings).length;
+      if (jsChunkCount < 3) {
+        try {
+          const { buffer, contentType } = await downloadUrl(url);
+          if (contentType.includes('html')) {
+            const raw = buffer.toString('utf8')
+              // strip scripts and style blocks
+              .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+              .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+              // strip all remaining tags
+              .replace(/<[^>]+>/g, ' ')
+              // collapse whitespace
+              .replace(/\s+/g, ' ')
+              .trim();
+            if (raw.length > 200) {
+              text = text + '\n' + raw;
+            }
+          }
+        } catch { /* best-effort — don't fail the page if raw fetch fails */ }
+      }
+
       fullText += `\n\n=== ${url} ===\n${text}`;
       const chunks = splitIntoChunks(text, headings);
       allChunks = allChunks.concat(chunks);
