@@ -539,18 +539,16 @@
       'font-weight:500!important}',
       '.zp-lead-chip:hover{background:var(--zp-primary)!important;color:#fff!important}',
 
-      // ── Mobile: true full screen below 768 px ──
-      '@media(max-width:600px){',
-      '#zp-win{',
+      // ── Mobile: JS-driven .zp-mobile class (touch + small screen) ──
+      '#zp-win.zp-mobile{',
       'position:fixed!important;',
       'top:0!important;left:0!important;right:0!important;bottom:0!important;',
       'width:100vw!important;height:100svh!important;max-height:100svh!important;',
       'border-radius:0!important;border:none!important;margin:0!important;',
       '}',
-      '#zp-btn{bottom:16px;right:16px;width:52px;height:52px}',
-      '#zp-msgs{padding:12px}',
-      '#zp-input-wrap{padding:8px 10px}',
-      '}',
+      '#zp-win.zp-mobile #zp-msgs{padding:12px}',
+      '#zp-win.zp-mobile #zp-input-wrap{padding:8px 10px}',
+      '@media(max-width:480px){#zp-btn{bottom:16px;right:16px;width:52px;height:52px}}',
     ].join('');
 
     var el = document.createElement('style');
@@ -737,19 +735,41 @@
       }
     });
 
-    // Mobile: adjust height when virtual keyboard appears via visualViewport
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', function () {
-        var winEl = document.getElementById('zp-win');
-        if (!winEl || !state.isOpen) return;
-        // Use visualViewport.width — reliable on mobile; window.innerWidth can fire on desktop
-        if (window.visualViewport.width < 600) {
+    // Mobile layout — JS-driven: touch capability AND small screen
+    function isMobileDevice() {
+      var hasTouchScreen = (
+        'ontouchstart' in window ||
+        navigator.maxTouchPoints > 1 ||
+        window.matchMedia('(pointer: coarse)').matches
+      );
+      var isSmallScreen = (window.visualViewport
+        ? window.visualViewport.width
+        : window.innerWidth) < 768;
+      return hasTouchScreen && isSmallScreen;
+    }
+
+    function applyMobileLayout() {
+      var winEl = document.getElementById('zp-win');
+      if (!winEl) return;
+      if (isMobileDevice()) {
+        winEl.classList.add('zp-mobile');
+        if (window.visualViewport) {
           var vpHeight = window.visualViewport.height;
           winEl.style.height = vpHeight + 'px';
           winEl.style.maxHeight = vpHeight + 'px';
-          // Keep input visible above the virtual keyboard
-          setTimeout(scrollToBottom, 100);
         }
+        setTimeout(scrollToBottom, 100);
+      } else {
+        winEl.classList.remove('zp-mobile');
+        winEl.style.height = '';
+        winEl.style.maxHeight = '';
+      }
+    }
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', function () {
+        if (!state.isOpen) return;
+        applyMobileLayout();
       });
     }
   }
@@ -1182,6 +1202,7 @@
     var btn = document.getElementById('zp-btn');
     if (win) {
       win.style.display = 'flex';
+      applyMobileLayout();
       // Re-trigger spring slide-up animation
       win.style.animation = 'none';
       void win.offsetHeight;
