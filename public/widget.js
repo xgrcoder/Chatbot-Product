@@ -689,13 +689,17 @@
 
     var displayName = state.config ? getDisplayName(state.config) : 'Support';
     var avatarHtml  = state.config ? buildAvatarInnerHtml(state.config, 'header') : ICONS.bot;
+    var cfg0        = state.config;
+    var avatarBg    = (cfg0 && cfg0.launcherLetter && !cfg0.logoUrl)
+      ? ' style="background:' + (cfg0.primaryColor || '#2563eb') + '"'
+      : '';
 
     win.innerHTML = [
       // Header
       '<div id="zp-header">',
         '<div id="zp-header-shimmer" aria-hidden="true"></div>',
         '<div id="zp-header-left">',
-          '<div id="zp-avatar" aria-hidden="true">'+avatarHtml+'</div>',
+          '<div id="zp-avatar" aria-hidden="true"'+avatarBg+'>'+avatarHtml+'</div>',
           '<div id="zp-title-wrap">',
             '<div id="zp-title">'+escHtml(displayName)+'</div>',
             '<div id="zp-status">',
@@ -931,6 +935,7 @@
       img.alt = '';
       av.appendChild(img);
     } else if (cfg && cfg.launcherLetter) {
+      av.style.background = cfg.primaryColor || '#2563eb';
       var letterSpan = document.createElement('span');
       letterSpan.style.cssText = 'font:800 14px/1 Inter,system-ui;color:#fff;letter-spacing:-0.02em;';
       letterSpan.textContent = cfg.launcherLetter;
