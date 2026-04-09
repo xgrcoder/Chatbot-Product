@@ -2,12 +2,13 @@
  * POST /api/chat
  *
  * Accepts: { clientId: string, messages: { role: string, content: string }[] }
- * Returns: { reply: string }
+ * Returns: { reply: string, ragUsed: boolean }
  */
 
 import { NextRequest } from 'next/server';
 import Groq from 'groq-sdk';
 import { getClientConfig } from '@/lib/getClient';
+import { retrieveContext } from '@/lib/rag';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -22,7 +23,6 @@ export async function OPTIONS() {
 export async function POST(request: NextRequest) {
   try {
     if (!process.env.GROQ_API_KEY) {
-      console.error('[/api/chat] GROQ_API_KEY is not set');
       return Response.json({ error: 'Server misconfiguration' }, { status: 500, headers: CORS });
     }
 
@@ -48,14 +48,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const contextSection = `\n\nWebsite content for reference:\n${client.content.slice(0, 8000)}`;
+    // Use RAG to retrieve the most relevant chunks for this query
+    const lastUserMessage = messages[messages.length - 1]?.content ?? '';
+    const { context, ragUsed } = await retrieveContext(clientId, lastUserMessage, 6);
+
+    // RAG chunks when available; raw content slice as fallback
+    const contextBlock = ragUsed
+      ? `Relevant information from our knowledge base:\n\n${context}`
+      : `Website content for reference:\n${client.content.slice(0, 8000)}`;
 
     const systemPrompt = `You are a helpful, friendly AI assistant for ${client.name}.
-Answer questions from website visitors accurately and concisely.
+
+Your job is to answer questions from website visitors accurately and concisely.
 Be professional, warm, and on-brand. Keep answers to 2-4 sentences unless more detail is needed.
-If you don't know something, say so honestly and suggest they contact the team directly.
+If asked about prices, opening times, services or specific details — use the information provided below.
+If you genuinely don't know something, say so honestly and suggest they contact the team directly.
 Never make up information not in the provided context.
-${contextSection}`;
+
+${contextBlock}`;
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     const completion = await groq.chat.completions.create({
@@ -67,19 +77,16 @@ ${contextSection}`;
           content: m.content,
         })),
       ],
-      temperature: 0.5,
-      max_tokens: 400,
+      temperature: 0.4,
+      max_tokens: 500,
     });
 
     const reply = completion.choices[0]?.message?.content ?? 'Sorry, I could not generate a response.';
-    return Response.json({ reply }, { status: 200, headers: CORS });
+    return Response.json({ reply, ragUsed }, { status: 200, headers: CORS });
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[/api/chat] Error:', message);
-    return Response.json(
-      { error: 'Internal server error', detail: message },
-      { status: 500, headers: CORS }
-    );
+    return Response.json({ error: 'Internal server error' }, { status: 500, headers: CORS });
   }
 }

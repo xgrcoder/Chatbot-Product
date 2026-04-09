@@ -540,10 +540,12 @@
       '#zp-win{',
       'position:fixed!important;',
       'top:0!important;left:0!important;right:0!important;bottom:0!important;',
-      'width:100%!important;height:100dvh!important;max-height:100dvh!important;',
+      'width:100vw!important;height:100svh!important;max-height:100svh!important;',
       'border-radius:0!important;border:none!important;margin:0!important;',
       '}',
-      '#zp-btn{bottom:16px;right:16px}',
+      '#zp-btn{bottom:16px;right:16px;width:52px;height:52px}',
+      '#zp-msgs{padding:12px}',
+      '#zp-input-wrap{padding:8px 10px}',
       '}',
     ].join('');
 
@@ -701,6 +703,7 @@
     win.querySelector('#zp-close-btn').addEventListener('click', closeChat);
     win.querySelector('#zp-sound-btn').addEventListener('click', toggleSound);
     win.querySelector('#zp-lead-submit').addEventListener('click', submitLead);
+    win.querySelector('#zp-send').addEventListener('click', function () { sendMessage(); });
 
     // Scroll pill
     var scrollPill = win.querySelector('#zp-scroll-pill');
@@ -733,11 +736,15 @@
     // Mobile: adjust height when virtual keyboard appears via visualViewport
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', function () {
-        var vpHeight = window.visualViewport.height;
         var winEl = document.getElementById('zp-win');
-        if (winEl && state.isOpen && window.innerWidth < 768) {
+        if (!winEl || !state.isOpen) return;
+        // Use visualViewport.width — reliable on mobile; window.innerWidth can fire on desktop
+        if (window.visualViewport.width < 768) {
+          var vpHeight = window.visualViewport.height;
           winEl.style.height = vpHeight + 'px';
           winEl.style.maxHeight = vpHeight + 'px';
+          // Keep input visible above the virtual keyboard
+          setTimeout(scrollToBottom, 100);
         }
       });
     }
